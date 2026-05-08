@@ -1,9 +1,10 @@
 from datetime import timedelta
 
 import httpx
+from jose import jwt
 
 from app.core.config import Settings, get_settings
-from app.core.security import create_access_token, hash_password, verify_password
+from app.core.security import ALGORITHM, create_access_token, hash_password, verify_password
 from app.tests.helpers import auth_headers
 
 
@@ -20,6 +21,21 @@ def test_default_secret_is_rejected_outside_test_environment(
         assert "CONNECTIFY_SECRET_KEY must be set" in str(exc)
     else:
         raise AssertionError("default secret should be rejected outside tests")
+
+
+def test_placeholder_secret_is_rejected_outside_test_environment(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("CONNECTIFY_ENVIRONMENT", "development")
+    monkeypatch.setenv("CONNECTIFY_SECRET_KEY", "replace-with-a-long-random-secret")
+    get_settings.cache_clear()
+
+    try:
+        Settings(_env_file=None)
+    except ValueError as exc:
+        assert "CONNECTIFY_SECRET_KEY must be set" in str(exc)
+    else:
+        raise AssertionError("placeholder secret should be rejected outside tests")
 
 
 def test_password_hash_round_trip_and_wrong_password_rejection() -> None:
@@ -63,6 +79,36 @@ async def test_tampered_token_is_rejected(client: httpx.AsyncClient) -> None:
     response = await client.get(
         "/api/v1/users/me",
         headers={"Authorization": "Bearer not-a-valid-token"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Could not validate credentials"
+
+
+async def test_token_with_unapproved_algorithm_is_rejected(
+    client: httpx.AsyncClient,
+) -> None:
+    settings = get_settings()
+    token = jwt.encode({"sub": "1"}, settings.secret_key, algorithm="HS512")
+
+    response = await client.get(
+        "/api/v1/users/me",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Could not validate credentials"
+
+
+async def test_token_with_non_string_subject_is_rejected(
+    client: httpx.AsyncClient,
+) -> None:
+    settings = get_settings()
+    token = jwt.encode({"sub": 1}, settings.secret_key, algorithm=ALGORITHM)
+
+    response = await client.get(
+        "/api/v1/users/me",
+        headers={"Authorization": f"Bearer {token}"},
     )
 
     assert response.status_code == 401

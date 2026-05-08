@@ -40,6 +40,34 @@ async def test_register_rejects_duplicate_email(
     assert response.json()["detail"] == "Email is already registered"
 
 
+async def test_register_normalizes_email_case_and_whitespace(
+    client: httpx.AsyncClient,
+) -> None:
+    response = await client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "  SAM@example.COM  ",
+            "username": "  sam_02  ",
+            "password": "secure-pass-123",
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["email"] == "sam@example.com"
+    assert body["username"] == "sam_02"
+
+    duplicate = await client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "sam@example.com",
+            "username": "another_user",
+            "password": "secure-pass-123",
+        },
+    )
+    assert duplicate.status_code == 409
+
+
 async def test_register_rejects_duplicate_username(
     client: httpx.AsyncClient,
     registered_user: dict[str, str],
@@ -75,6 +103,22 @@ async def test_login_returns_bearer_token(
     assert body["token_type"] == "bearer"
 
 
+async def test_login_accepts_trimmed_email(
+    client: httpx.AsyncClient,
+    registered_user: dict[str, str],
+) -> None:
+    response = await client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": f"  {registered_user['email'].upper()}  ",
+            "password": registered_user["password"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["access_token"]
+
+
 async def test_login_rejects_wrong_password(
     client: httpx.AsyncClient,
     registered_user: dict[str, str],
@@ -92,6 +136,7 @@ async def test_me_requires_valid_bearer_token(client: httpx.AsyncClient) -> None
     response = await client.get("/api/v1/users/me")
 
     assert response.status_code == 401
+    assert response.json()["detail"] == "Could not validate credentials"
 
 
 async def test_me_returns_current_user(

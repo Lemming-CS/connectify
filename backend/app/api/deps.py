@@ -10,11 +10,11 @@ from app.core.security import decode_access_token
 from app.models.user import User
 from app.repositories.users import UserRepository
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
 
 
 async def get_current_user(
-    token: Annotated[str, Depends(oauth2_scheme)],
+    token: Annotated[str | None, Depends(oauth2_scheme)],
     db: Annotated[Session, Depends(get_db)],
 ) -> User:
     credentials_error = HTTPException(
@@ -24,9 +24,11 @@ async def get_current_user(
     )
 
     try:
+        if token is None:
+            raise credentials_error
         payload = decode_access_token(token)
         subject = payload.get("sub")
-        if subject is None:
+        if not isinstance(subject, str):
             raise credentials_error
         user_id = int(subject)
     except (JWTError, ValueError):

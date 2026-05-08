@@ -23,9 +23,13 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_secret_key(self) -> "Settings":
+        unsafe_secret_values = {
+            "change-me-in-production",
+            "replace-with-a-long-random-secret",
+        }
         if (
             self.environment != "test"
-            and self.secret_key == "change-me-in-production"
+            and self.secret_key in unsafe_secret_values
         ):
             msg = "CONNECTIFY_SECRET_KEY must be set outside the test environment"
             raise ValueError(msg)

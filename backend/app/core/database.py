@@ -1,8 +1,10 @@
 from collections.abc import AsyncGenerator
+from functools import lru_cache
 
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.orm.session import sessionmaker as SessionmakerType
 
 from app.core.config import get_settings
 
@@ -17,12 +19,18 @@ def build_engine(database_url: str | None = None) -> Engine:
     return create_engine(url, connect_args=connect_args)
 
 
-engine = build_engine()
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+@lru_cache
+def get_engine() -> Engine:
+    return build_engine()
+
+
+@lru_cache
+def get_sessionmaker() -> SessionmakerType[Session]:
+    return sessionmaker(bind=get_engine(), autoflush=False, autocommit=False)
 
 
 async def get_db() -> AsyncGenerator[Session, None]:
-    db = SessionLocal()
+    db = get_sessionmaker()()
     try:
         yield db
     finally:
