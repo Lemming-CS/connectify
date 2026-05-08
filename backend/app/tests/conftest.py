@@ -18,6 +18,7 @@ TEST_DATABASE_URL = "sqlite://"
 def test_settings(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
     monkeypatch.setenv("CONNECTIFY_ENVIRONMENT", "test")
     monkeypatch.setenv("CONNECTIFY_DATABASE_URL", TEST_DATABASE_URL)
+    monkeypatch.setenv("CONNECTIFY_SECRET_KEY", "test-secret-key-for-connectify")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()

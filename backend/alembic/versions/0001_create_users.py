@@ -25,8 +25,8 @@ def upgrade() -> None:
         sa.Column("hashed_password", sa.String(length=255), nullable=False),
         sa.Column("avatar_url", sa.String(length=500), nullable=True),
         sa.Column("description", sa.String(length=500), nullable=True),
-        sa.Column("status", sa.String(length=32), nullable=False),
-        sa.Column("is_active", sa.Boolean(), nullable=False),
+        sa.Column("status", sa.String(length=32), server_default="offline", nullable=False),
+        sa.Column("is_active", sa.Boolean(), server_default=sa.true(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.PrimaryKeyConstraint("id"),
@@ -41,4 +41,3 @@ def downgrade() -> None:
     op.drop_index(op.f("ix_users_id"), table_name="users")
     op.drop_index(op.f("ix_users_email"), table_name="users")
     op.drop_table("users")
-

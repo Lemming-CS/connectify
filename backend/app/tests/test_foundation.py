@@ -25,6 +25,7 @@ async def test_health_check_does_not_require_database_connection(
 
 def test_default_database_url_is_postgresql(monkeypatch) -> None:
     monkeypatch.delenv("CONNECTIFY_DATABASE_URL", raising=False)
+    monkeypatch.setenv("CONNECTIFY_SECRET_KEY", "local-development-secret")
     get_settings.cache_clear()
 
     settings = get_settings()

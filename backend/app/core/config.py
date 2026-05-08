@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,6 +20,16 @@ class Settings(BaseSettings):
         env_prefix="CONNECTIFY_",
         extra="ignore",
     )
+
+    @model_validator(mode="after")
+    def validate_secret_key(self) -> "Settings":
+        if (
+            self.environment != "test"
+            and self.secret_key == "change-me-in-production"
+        ):
+            msg = "CONNECTIFY_SECRET_KEY must be set outside the test environment"
+            raise ValueError(msg)
+        return self
 
 
 @lru_cache
