@@ -9,22 +9,23 @@ from app.models.user import User
 from app.schemas.messaging import (
     ChatRead,
     DirectChatCreate,
+    GroupCreate,
+    MemberAdd,
+    MemberRoleUpdate,
     MessageCreate,
     MessagePage,
     MessageRead,
     MessageUpdate,
     ReadReceiptRead,
     ReadStatusUpdate,
+    TopicCreate,
+    TopicRead,
     TypingIndicatorUpdate,
 )
-from app.services.messaging import ChatService, MessageService
+from app.services.messaging import ChatService, MessageService, TopicService
 from app.services.realtime import ConnectionManager
 
 router = APIRouter(prefix="/chats", tags=["chats"])
-
-
-def get_connection_manager(request: Request) -> ConnectionManager:
-    return request.app.state.connection_manager
 
 
 @router.post("/direct", response_model=ChatRead)
@@ -39,12 +40,74 @@ async def create_direct_chat(
     return chat
 
 
+@router.post("/group", response_model=ChatRead, status_code=status.HTTP_201_CREATED)
+async def create_group(
+    payload: GroupCreate,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> ChatRead:
+    return ChatService(db).create_group(current_user=current_user, payload=payload, kind="group")
+
+
+@router.post("/supergroup", response_model=ChatRead, status_code=status.HTTP_201_CREATED)
+async def create_supergroup(
+    payload: GroupCreate,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> ChatRead:
+    return ChatService(db).create_group(current_user=current_user, payload=payload, kind="supergroup")
+
+
 @router.get("", response_model=list[ChatRead])
 async def list_chats(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
 ) -> list[ChatRead]:
     return ChatService(db).list_chats(current_user)
+
+
+@router.post("/{chat_id}/members", response_model=ChatRead)
+async def add_member(
+    chat_id: int,
+    payload: MemberAdd,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> ChatRead:
+    return ChatService(db).add_member(
+        conversation_id=chat_id,
+        current_user=current_user,
+        user_id=payload.user_id,
+    )
+
+
+@router.delete("/{chat_id}/members/{user_id}", response_model=ChatRead)
+async def remove_member(
+    chat_id: int,
+    user_id: int,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> ChatRead:
+    return ChatService(db).remove_member(
+        conversation_id=chat_id,
+        current_user=current_user,
+        user_id=user_id,
+    )
+
+
+@router.patch("/{chat_id}/members/{user_id}", response_model=ChatRead)
+async def update_member_role(
+    chat_id: int,
+    user_id: int,
+    payload: MemberRoleUpdate,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> ChatRead:
+    return ChatService(db).update_member_role(
+        conversation_id=chat_id,
+        current_user=current_user,
+        user_id=user_id,
+        role=payload.role,
+    )
 
 
 @router.get("/{chat_id}/messages", response_model=MessagePage)
@@ -67,14 +130,91 @@ async def list_messages(
 async def send_message(
     chat_id: int,
     payload: MessageCreate,
+    request: Request,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
-    manager: ConnectionManager = Depends(get_connection_manager),
 ) -> MessageRead:
+    manager: ConnectionManager = request.app.state.connection_manager
     message, recipients, event = MessageService(db).send_message(
         conversation_id=chat_id,
         current_user=current_user,
         body=payload.body,
+    )
+    await manager.send_event(recipients, event)
+    return message
+
+
+@router.get("/{chat_id}/topics", response_model=list[TopicRead])
+async def list_topics(
+    chat_id: int,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> list[TopicRead]:
+    return TopicService(db).list_topics(conversation_id=chat_id, current_user=current_user)
+
+
+@router.post("/{chat_id}/topics", response_model=TopicRead, status_code=status.HTTP_201_CREATED)
+async def create_topic(
+    chat_id: int,
+    payload: TopicCreate,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> TopicRead:
+    return TopicService(db).create_topic(
+        conversation_id=chat_id,
+        current_user=current_user,
+        title=payload.title,
+        description=payload.description,
+    )
+
+
+@router.post("/{chat_id}/topics/{topic_id}/archive", response_model=TopicRead)
+async def archive_topic(
+    chat_id: int,
+    topic_id: int,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> TopicRead:
+    return TopicService(db).archive_topic(
+        conversation_id=chat_id,
+        topic_id=topic_id,
+        current_user=current_user,
+    )
+
+
+@router.get("/{chat_id}/topics/{topic_id}/messages", response_model=MessagePage)
+async def list_topic_messages(
+    chat_id: int,
+    topic_id: int,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+    before_id: int | None = Query(default=None, gt=0),
+    limit: int = Query(default=50, ge=1, le=100),
+) -> MessagePage:
+    return MessageService(db).list_messages(
+        conversation_id=chat_id,
+        current_user=current_user,
+        before_id=before_id,
+        limit=limit,
+        topic_id=topic_id,
+    )
+
+
+@router.post("/{chat_id}/topics/{topic_id}/messages", response_model=MessageRead, status_code=status.HTTP_201_CREATED)
+async def send_topic_message(
+    chat_id: int,
+    topic_id: int,
+    payload: MessageCreate,
+    request: Request,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> MessageRead:
+    manager: ConnectionManager = request.app.state.connection_manager
+    message, recipients, event = MessageService(db).send_message(
+        conversation_id=chat_id,
+        current_user=current_user,
+        body=payload.body,
+        topic_id=topic_id,
     )
     await manager.send_event(recipients, event)
     return message
@@ -85,10 +225,11 @@ async def edit_message(
     chat_id: int,
     message_id: int,
     payload: MessageUpdate,
+    request: Request,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
-    manager: ConnectionManager = Depends(get_connection_manager),
 ) -> MessageRead:
+    manager: ConnectionManager = request.app.state.connection_manager
     message, recipients, event = MessageService(db).edit_message(
         conversation_id=chat_id,
         message_id=message_id,
@@ -103,10 +244,11 @@ async def edit_message(
 async def delete_message(
     chat_id: int,
     message_id: int,
+    request: Request,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
-    manager: ConnectionManager = Depends(get_connection_manager),
 ) -> MessageRead:
+    manager: ConnectionManager = request.app.state.connection_manager
     message, recipients, event = MessageService(db).delete_message(
         conversation_id=chat_id,
         message_id=message_id,
@@ -120,10 +262,11 @@ async def delete_message(
 async def mark_read(
     chat_id: int,
     payload: ReadStatusUpdate,
+    request: Request,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
-    manager: ConnectionManager = Depends(get_connection_manager),
 ) -> ReadReceiptRead:
+    manager: ConnectionManager = request.app.state.connection_manager
     receipt, recipients, event = ChatService(db).mark_read(
         conversation_id=chat_id,
         current_user=current_user,
@@ -137,10 +280,11 @@ async def mark_read(
 async def publish_typing(
     chat_id: int,
     payload: TypingIndicatorUpdate,
+    request: Request,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
-    manager: ConnectionManager = Depends(get_connection_manager),
 ) -> dict[str, bool]:
+    manager: ConnectionManager = request.app.state.connection_manager
     recipients, event = ChatService(db).publish_typing(
         conversation_id=chat_id,
         current_user=current_user,

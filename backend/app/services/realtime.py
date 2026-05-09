@@ -1,7 +1,7 @@
-import asyncio
 from collections import defaultdict
 from collections.abc import Iterable
 import queue
+import threading
 
 from fastapi import WebSocket
 
@@ -21,17 +21,17 @@ class ManagedWebSocket:
 class ConnectionManager:
     def __init__(self) -> None:
         self._connections: dict[int, list[ManagedWebSocket]] = defaultdict(list)
-        self._lock = asyncio.Lock()
+        self._lock = threading.Lock()
 
     async def connect(self, user_id: int, websocket: WebSocket) -> ManagedWebSocket:
         await websocket.accept()
         managed = ManagedWebSocket(websocket)
-        async with self._lock:
+        with self._lock:
             self._connections[user_id].append(managed)
         return managed
 
     async def disconnect(self, user_id: int, managed: ManagedWebSocket) -> None:
-        async with self._lock:
+        with self._lock:
             connections = self._connections.get(user_id)
             if not connections:
                 return
@@ -42,7 +42,7 @@ class ConnectionManager:
 
     async def send_event(self, user_ids: Iterable[int], event: dict[str, object]) -> None:
         unique_ids = set(user_ids)
-        async with self._lock:
+        with self._lock:
             targets = {
                 user_id: list(self._connections.get(user_id, []))
                 for user_id in unique_ids

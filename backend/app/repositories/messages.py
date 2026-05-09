@@ -33,6 +33,7 @@ class MessageRepository:
         *,
         before_id: int | None,
         limit: int,
+        topic_id: int | None = None,
     ) -> tuple[list[Message], bool]:
         stmt = (
             select(Message)
@@ -43,6 +44,10 @@ class MessageRepository:
         )
         if before_id is not None:
             stmt = stmt.where(Message.id < before_id)
+        if topic_id is not None:
+            stmt = stmt.where(Message.topic_id == topic_id)
+        elif topic_id is None:
+            stmt = stmt.where(Message.topic_id.is_(None))
 
         results = list(self.db.scalars(stmt))
         has_more = len(results) > limit
@@ -60,9 +65,17 @@ class MessageRepository:
         )
         return self.db.scalar(stmt)
 
-    def create(self, conversation_id: int, sender_id: int, body: str) -> Message:
+    def create(
+        self,
+        conversation_id: int,
+        sender_id: int,
+        body: str,
+        *,
+        topic_id: int | None = None,
+    ) -> Message:
         message = Message(
             conversation_id=conversation_id,
+            topic_id=topic_id,
             sender_id=sender_id,
             body=body,
         )

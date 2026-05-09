@@ -1,7 +1,9 @@
+from datetime import UTC, datetime
+
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.models import Conversation, ConversationMember, Message
+from app.models import Conversation, ConversationMember, ConversationTopic, Message
 
 
 class ConversationRepository:
@@ -10,6 +12,13 @@ class ConversationRepository:
 
     def get_by_id(self, conversation_id: int) -> Conversation | None:
         return self.db.scalar(self._conversation_with_members().where(Conversation.id == conversation_id))
+
+    def get_with_topics(self, conversation_id: int) -> Conversation | None:
+        stmt = select(Conversation).where(Conversation.id == conversation_id).options(
+            selectinload(Conversation.members).selectinload(ConversationMember.user),
+            selectinload(Conversation.topics),
+        )
+        return self.db.scalar(stmt)
 
     def get_direct_between(self, first_user_id: int, second_user_id: int) -> Conversation | None:
         member_ids = sorted({first_user_id, second_user_id})
@@ -40,6 +49,17 @@ class ConversationRepository:
             )
         )
         return list(self.db.scalars(stmt).unique())
+
+    def get_member(self, conversation_id: int, user_id: int) -> ConversationMember | None:
+        stmt = (
+            select(ConversationMember)
+            .where(
+                ConversationMember.conversation_id == conversation_id,
+                ConversationMember.user_id == user_id,
+            )
+            .options(selectinload(ConversationMember.user))
+        )
+        return self.db.scalar(stmt)
 
     def get_active_member(self, conversation_id: int, user_id: int) -> ConversationMember | None:
         stmt = (
@@ -76,6 +96,109 @@ class ConversationRepository:
             )
         self.db.flush()
         return conversation
+
+    def create_group(
+        self,
+        *,
+        kind: str,
+        created_by_id: int,
+        title: str,
+        description: str | None,
+        avatar_url: str | None,
+        member_ids: list[int],
+    ) -> Conversation:
+        conversation = Conversation(
+            kind=kind,
+            title=title,
+            description=description,
+            avatar_url=avatar_url,
+            created_by_id=created_by_id,
+        )
+        self.db.add(conversation)
+        self.db.flush()
+
+        seen_user_ids: set[int] = set()
+        for user_id in [created_by_id, *member_ids]:
+            if user_id in seen_user_ids:
+                continue
+            seen_user_ids.add(user_id)
+            self.db.add(
+                ConversationMember(
+                    conversation_id=conversation.id,
+                    user_id=user_id,
+                    role="owner" if user_id == created_by_id else "member",
+                )
+            )
+
+        self.db.flush()
+        return conversation
+
+    def add_or_restore_member(self, conversation_id: int, user_id: int) -> ConversationMember:
+        member = self.get_member(conversation_id, user_id)
+        if member is None:
+            member = ConversationMember(
+                conversation_id=conversation_id,
+                user_id=user_id,
+                role="member",
+            )
+        else:
+            member.left_at = None
+            member.role = "member"
+            member.joined_at = datetime.now(UTC)
+        self.db.add(member)
+        self.db.flush()
+        return member
+
+    def mark_member_left(self, member: ConversationMember) -> ConversationMember:
+        member.left_at = datetime.now(UTC)
+        self.db.add(member)
+        self.db.flush()
+        return member
+
+    def update_member_role(self, member: ConversationMember, role: str) -> ConversationMember:
+        member.role = role
+        self.db.add(member)
+        self.db.flush()
+        return member
+
+    def create_topic(
+        self,
+        *,
+        conversation_id: int,
+        created_by_id: int,
+        title: str,
+        description: str | None,
+        is_general: bool = False,
+    ) -> ConversationTopic:
+        topic = ConversationTopic(
+            conversation_id=conversation_id,
+            created_by_id=created_by_id,
+            title=title,
+            description=description,
+            is_general=is_general,
+        )
+        self.db.add(topic)
+        self.db.flush()
+        return topic
+
+    def get_topic(self, conversation_id: int, topic_id: int) -> ConversationTopic | None:
+        stmt = select(ConversationTopic).where(
+            ConversationTopic.id == topic_id,
+            ConversationTopic.conversation_id == conversation_id,
+        )
+        return self.db.scalar(stmt)
+
+    def list_topics(self, conversation_id: int) -> list[ConversationTopic]:
+        stmt = (
+            select(ConversationTopic)
+            .where(ConversationTopic.conversation_id == conversation_id)
+            .order_by(
+                ConversationTopic.is_general.desc(),
+                ConversationTopic.created_at.asc(),
+                ConversationTopic.id.asc(),
+            )
+        )
+        return list(self.db.scalars(stmt))
 
     def set_last_message(self, conversation: Conversation, message: Message | None) -> None:
         conversation.last_message_at = None if message is None else message.created_at
