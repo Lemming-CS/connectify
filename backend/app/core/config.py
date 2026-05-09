@@ -14,6 +14,11 @@ class Settings(BaseSettings):
     )
     access_token_expire_minutes: int = 60 * 24
     cors_origins: list[str] = ["http://localhost:3000"]
+    media_root: str = "media"
+    media_max_image_upload_bytes: int = 10 * 1024 * 1024
+    media_max_video_upload_bytes: int = 50 * 1024 * 1024
+    media_max_audio_upload_bytes: int = 20 * 1024 * 1024
+    media_max_file_upload_bytes: int = 25 * 1024 * 1024
 
     model_config = SettingsConfigDict(
         env_file=".env",

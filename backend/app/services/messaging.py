@@ -8,7 +8,7 @@ from app.models.user import User
 from app.repositories.conversations import ConversationRepository
 from app.repositories.messages import MessageRepository
 from app.repositories.users import UserRepository
-from app.schemas.messaging import ChatRead, GroupCreate, MessagePage, MessageRead, ReadReceiptRead, TopicRead
+from app.schemas.messaging import AttachmentRead, ChatRead, GroupCreate, MessagePage, MessageRead, ReadReceiptRead, TopicRead
 from app.services.messaging_permissions import (
     can_change_roles,
     can_manage_members,
@@ -638,4 +638,34 @@ class MessageService:
         return member
 
     def _serialize_message(self, message: Message) -> MessageRead:
-        return MessageRead.model_validate(message)
+        return MessageRead(
+            id=message.id,
+            conversation_id=message.conversation_id,
+            topic_id=message.topic_id,
+            sender={
+                "id": message.sender.id,
+                "username": message.sender.username,
+                "avatar_url": message.sender.avatar_url,
+            },
+            body=message.body,
+            attachments=[self._serialize_attachment(item) for item in message.attachments],
+            created_at=message.created_at,
+            edited_at=message.edited_at,
+            deleted_at=message.deleted_at,
+        )
+
+    def _serialize_attachment(self, attachment) -> AttachmentRead:
+        return AttachmentRead(
+            id=attachment.id,
+            kind=attachment.kind,
+            is_voice_message=attachment.is_voice_message,
+            original_filename=attachment.original_filename,
+            content_type=attachment.content_type,
+            size_bytes=attachment.size_bytes,
+            checksum_sha256=attachment.checksum_sha256,
+            width=attachment.width,
+            height=attachment.height,
+            duration_seconds=attachment.duration_seconds,
+            created_at=attachment.created_at,
+            media_url=f"/api/v1/media/attachments/{attachment.id}",
+        )

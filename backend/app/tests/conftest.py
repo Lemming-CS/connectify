@@ -25,6 +25,17 @@ def test_settings(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None
     get_settings.cache_clear()
 
 
+@pytest.fixture(autouse=True)
+def test_media_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> Generator[None, None, None]:
+    monkeypatch.setenv("CONNECTIFY_MEDIA_ROOT", str(tmp_path / "media"))
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
 @pytest.fixture()
 def db_engine() -> Generator:
     engine = create_engine(

@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -66,6 +66,7 @@ class MessageAttachment(Base):
     uploader_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
     kind: Mapped[str] = mapped_column(String(16), default="file", nullable=False)
     status: Mapped[str] = mapped_column(String(16), default="ready", nullable=False)
+    is_voice_message: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     storage_key: Mapped[str] = mapped_column(String(255), nullable=False)
     original_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
     content_type: Mapped[str | None] = mapped_column(String(255), nullable=True)

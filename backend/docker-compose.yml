@@ -24,6 +24,8 @@ services:
       CONNECTIFY_CORS_ORIGINS: '["http://localhost:3000"]'
     ports:
       - "8000:8000"
+    volumes:
+      - connectify-media:/app/media
     depends_on:
       db:
         condition: service_healthy
@@ -31,3 +33,4 @@ services:
 
 volumes:
   connectify-postgres:
+  connectify-media:

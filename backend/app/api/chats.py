@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request, Response, status
+from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
@@ -23,6 +23,7 @@ from app.schemas.messaging import (
     TypingIndicatorUpdate,
 )
 from app.services.messaging import ChatService, MessageService, TopicService
+from app.services.attachments import AttachmentService
 from app.services.realtime import ConnectionManager
 
 router = APIRouter(prefix="/chats", tags=["chats"])
@@ -144,6 +145,29 @@ async def send_message(
     return message
 
 
+@router.post("/{chat_id}/attachments", response_model=MessageRead, status_code=status.HTTP_201_CREATED)
+async def upload_attachment(
+    chat_id: int,
+    request: Request,
+    *,
+    file: UploadFile = File(...),
+    body: str | None = Form(default=None),
+    is_voice_message: bool = Form(default=False),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MessageRead:
+    manager: ConnectionManager = request.app.state.connection_manager
+    message, recipients, event = await AttachmentService(db).upload_message_attachment(
+        conversation_id=chat_id,
+        current_user=current_user,
+        upload=file,
+        body=body.strip() if body is not None else None,
+        is_voice_message=is_voice_message,
+    )
+    await manager.send_event(recipients, event)
+    return message
+
+
 @router.get("/{chat_id}/topics", response_model=list[TopicRead])
 async def list_topics(
     chat_id: int,
@@ -214,6 +238,31 @@ async def send_topic_message(
         conversation_id=chat_id,
         current_user=current_user,
         body=payload.body,
+        topic_id=topic_id,
+    )
+    await manager.send_event(recipients, event)
+    return message
+
+
+@router.post("/{chat_id}/topics/{topic_id}/attachments", response_model=MessageRead, status_code=status.HTTP_201_CREATED)
+async def upload_topic_attachment(
+    chat_id: int,
+    topic_id: int,
+    request: Request,
+    *,
+    file: UploadFile = File(...),
+    body: str | None = Form(default=None),
+    is_voice_message: bool = Form(default=False),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MessageRead:
+    manager: ConnectionManager = request.app.state.connection_manager
+    message, recipients, event = await AttachmentService(db).upload_message_attachment(
+        conversation_id=chat_id,
+        current_user=current_user,
+        upload=file,
+        body=body.strip() if body is not None else None,
+        is_voice_message=is_voice_message,
         topic_id=topic_id,
     )
     await manager.send_event(recipients, event)

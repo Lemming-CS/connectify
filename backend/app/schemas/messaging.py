@@ -29,12 +29,28 @@ class MessageSenderRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class AttachmentRead(BaseModel):
+    id: int
+    kind: str
+    is_voice_message: bool
+    original_filename: str | None
+    content_type: str | None
+    size_bytes: int
+    checksum_sha256: str | None
+    width: int | None
+    height: int | None
+    duration_seconds: int | None
+    created_at: datetime
+    media_url: str
+
+
 class MessageRead(BaseModel):
     id: int
     conversation_id: int
     topic_id: int | None
     sender: MessageSenderRead
     body: str | None
+    attachments: list[AttachmentRead] = Field(default_factory=list)
     created_at: datetime
     edited_at: datetime | None
     deleted_at: datetime | None
@@ -140,6 +156,10 @@ class ReadStatusUpdate(BaseModel):
 
 class TypingIndicatorUpdate(BaseModel):
     is_typing: bool = True
+
+
+class AttachmentUploadResult(BaseModel):
+    message: MessageRead
 
 
 class RealtimeEvent(BaseModel):

@@ -12,7 +12,10 @@ class MessageRepository:
         stmt = (
             select(Message)
             .where(Message.id == message_id)
-            .options(selectinload(Message.sender))
+            .options(
+                selectinload(Message.sender),
+                selectinload(Message.attachments),
+            )
         )
         return self.db.scalar(stmt)
 
@@ -23,7 +26,10 @@ class MessageRepository:
                 Message.id == message_id,
                 Message.conversation_id == conversation_id,
             )
-            .options(selectinload(Message.sender))
+            .options(
+                selectinload(Message.sender),
+                selectinload(Message.attachments),
+            )
         )
         return self.db.scalar(stmt)
 
@@ -38,7 +44,10 @@ class MessageRepository:
         stmt = (
             select(Message)
             .where(Message.conversation_id == conversation_id)
-            .options(selectinload(Message.sender))
+            .options(
+                selectinload(Message.sender),
+                selectinload(Message.attachments),
+            )
             .order_by(Message.id.desc())
             .limit(limit + 1)
         )
@@ -59,7 +68,10 @@ class MessageRepository:
         stmt = (
             select(Message)
             .where(Message.conversation_id == conversation_id)
-            .options(selectinload(Message.sender))
+            .options(
+                selectinload(Message.sender),
+                selectinload(Message.attachments),
+            )
             .order_by(Message.id.desc())
             .limit(1)
         )
