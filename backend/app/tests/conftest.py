@@ -2,6 +2,7 @@ from collections.abc import AsyncGenerator, Generator
 
 import httpx
 import pytest
+from fastapi import FastAPI
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -25,38 +26,50 @@ def test_settings(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None
 
 
 @pytest.fixture()
-def db_session() -> Generator[Session, None, None]:
+def db_engine() -> Generator:
     engine = create_engine(
         TEST_DATABASE_URL,
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     Base.metadata.create_all(bind=engine)
-
-    with TestingSessionLocal() as session:
-        yield session
-
+    yield engine
     Base.metadata.drop_all(bind=engine)
 
 
 @pytest.fixture()
-async def client(db_session: Session) -> AsyncGenerator[httpx.AsyncClient, None]:
+def db_sessionmaker(db_engine) -> sessionmaker:
+    return sessionmaker(bind=db_engine, autoflush=False, autocommit=False)
+
+
+@pytest.fixture()
+def db_session(db_sessionmaker: sessionmaker) -> Generator[Session, None, None]:
+    with db_sessionmaker() as session:
+        yield session
+
+
+@pytest.fixture()
+def app(db_sessionmaker: sessionmaker) -> Generator[FastAPI, None, None]:
     app = create_app()
 
     async def override_get_db() -> AsyncGenerator[Session, None]:
-        yield db_session
+        with db_sessionmaker() as session:
+            yield session
 
     app.dependency_overrides[get_db] = override_get_db
+    app.state.sessionmaker = db_sessionmaker
+    yield app
+    app.dependency_overrides.clear()
 
+
+@pytest.fixture()
+async def client(app: FastAPI) -> AsyncGenerator[httpx.AsyncClient, None]:
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(
         transport=transport,
         base_url="http://testserver",
     ) as test_client:
         yield test_client
-
-    app.dependency_overrides.clear()
 
 
 @pytest.fixture()

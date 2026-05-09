@@ -1,4 +1,5 @@
 from app.models.conversation import Conversation, ConversationMember
+from app.models.message import Message
 
 MANAGE_ROLES = {"owner", "admin"}
 
@@ -53,3 +54,19 @@ def can_remove_member(
     if actor.role == "admin":
         return target.role == "member"
     return False
+
+
+def can_manage_message(
+    conversation: Conversation,
+    actor: ConversationMember | None,
+    message: Message,
+) -> bool:
+    if not can_view_conversation(actor):
+        return False
+    if actor is None:
+        return False
+    if actor.user_id == message.sender_id:
+        return True
+    if conversation.kind == "direct":
+        return False
+    return actor.role in MANAGE_ROLES
