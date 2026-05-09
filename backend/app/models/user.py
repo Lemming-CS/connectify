@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, Integer, String, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
 
@@ -29,3 +29,24 @@ class User(Base):
         nullable=False,
     )
 
+    conversations_created = relationship(
+        "Conversation",
+        foreign_keys="Conversation.created_by_id",
+        back_populates="creator",
+    )
+    conversation_memberships = relationship(
+        "ConversationMember",
+        foreign_keys="ConversationMember.user_id",
+        back_populates="user",
+    )
+    topics_created = relationship(
+        "ConversationTopic",
+        foreign_keys="ConversationTopic.created_by_id",
+        back_populates="creator",
+    )
+    messages_sent = relationship("Message", foreign_keys="Message.sender_id", back_populates="sender")
+    attachments_uploaded = relationship(
+        "MessageAttachment",
+        foreign_keys="MessageAttachment.uploader_id",
+        back_populates="uploader",
+    )
