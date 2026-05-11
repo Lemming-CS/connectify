@@ -50,3 +50,13 @@ class User(Base):
         foreign_keys="MessageAttachment.uploader_id",
         back_populates="uploader",
     )
+    notifications_received = relationship(
+        "Notification",
+        foreign_keys="Notification.recipient_id",
+        back_populates="recipient",
+    )
+    notifications_sent = relationship(
+        "Notification",
+        foreign_keys="Notification.actor_id",
+        back_populates="actor",
+    )

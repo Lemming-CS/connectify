@@ -23,10 +23,16 @@ from app.schemas.messaging import (
     TypingIndicatorUpdate,
 )
 from app.services.messaging import ChatService, MessageService, TopicService
+from app.services.notifications import RealtimeDelivery
 from app.services.attachments import AttachmentService
 from app.services.realtime import ConnectionManager
 
 router = APIRouter(prefix="/chats", tags=["chats"])
+
+
+async def _send_deliveries(manager: ConnectionManager, deliveries: list[RealtimeDelivery]) -> None:
+    for delivery in deliveries:
+        await manager.send_event(delivery.recipients, delivery.event)
 
 
 @router.post("/direct", response_model=ChatRead)
@@ -44,19 +50,27 @@ async def create_direct_chat(
 @router.post("/group", response_model=ChatRead, status_code=status.HTTP_201_CREATED)
 async def create_group(
     payload: GroupCreate,
+    request: Request,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
 ) -> ChatRead:
-    return ChatService(db).create_group(current_user=current_user, payload=payload, kind="group")
+    manager: ConnectionManager = request.app.state.connection_manager
+    chat, deliveries = ChatService(db).create_group(current_user=current_user, payload=payload, kind="group")
+    await _send_deliveries(manager, deliveries)
+    return chat
 
 
 @router.post("/supergroup", response_model=ChatRead, status_code=status.HTTP_201_CREATED)
 async def create_supergroup(
     payload: GroupCreate,
+    request: Request,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
 ) -> ChatRead:
-    return ChatService(db).create_group(current_user=current_user, payload=payload, kind="supergroup")
+    manager: ConnectionManager = request.app.state.connection_manager
+    chat, deliveries = ChatService(db).create_group(current_user=current_user, payload=payload, kind="supergroup")
+    await _send_deliveries(manager, deliveries)
+    return chat
 
 
 @router.get("", response_model=list[ChatRead])
@@ -71,28 +85,36 @@ async def list_chats(
 async def add_member(
     chat_id: int,
     payload: MemberAdd,
+    request: Request,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
 ) -> ChatRead:
-    return ChatService(db).add_member(
+    manager: ConnectionManager = request.app.state.connection_manager
+    chat, deliveries = ChatService(db).add_member(
         conversation_id=chat_id,
         current_user=current_user,
         user_id=payload.user_id,
     )
+    await _send_deliveries(manager, deliveries)
+    return chat
 
 
 @router.delete("/{chat_id}/members/{user_id}", response_model=ChatRead)
 async def remove_member(
     chat_id: int,
     user_id: int,
+    request: Request,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
 ) -> ChatRead:
-    return ChatService(db).remove_member(
+    manager: ConnectionManager = request.app.state.connection_manager
+    chat, deliveries = ChatService(db).remove_member(
         conversation_id=chat_id,
         current_user=current_user,
         user_id=user_id,
     )
+    await _send_deliveries(manager, deliveries)
+    return chat
 
 
 @router.patch("/{chat_id}/members/{user_id}", response_model=ChatRead)
@@ -100,15 +122,19 @@ async def update_member_role(
     chat_id: int,
     user_id: int,
     payload: MemberRoleUpdate,
+    request: Request,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
 ) -> ChatRead:
-    return ChatService(db).update_member_role(
+    manager: ConnectionManager = request.app.state.connection_manager
+    chat, deliveries = ChatService(db).update_member_role(
         conversation_id=chat_id,
         current_user=current_user,
         user_id=user_id,
         role=payload.role,
     )
+    await _send_deliveries(manager, deliveries)
+    return chat
 
 
 @router.get("/{chat_id}/messages", response_model=MessagePage)
@@ -136,12 +162,12 @@ async def send_message(
     db: Session = Depends(get_db),
 ) -> MessageRead:
     manager: ConnectionManager = request.app.state.connection_manager
-    message, recipients, event = MessageService(db).send_message(
+    message, deliveries = MessageService(db).send_message(
         conversation_id=chat_id,
         current_user=current_user,
         body=payload.body,
     )
-    await manager.send_event(recipients, event)
+    await _send_deliveries(manager, deliveries)
     return message
 
 
@@ -157,14 +183,14 @@ async def upload_attachment(
     db: Session = Depends(get_db),
 ) -> MessageRead:
     manager: ConnectionManager = request.app.state.connection_manager
-    message, recipients, event = await AttachmentService(db).upload_message_attachment(
+    message, deliveries = await AttachmentService(db).upload_message_attachment(
         conversation_id=chat_id,
         current_user=current_user,
         upload=file,
         body=body.strip() if body is not None else None,
         is_voice_message=is_voice_message,
     )
-    await manager.send_event(recipients, event)
+    await _send_deliveries(manager, deliveries)
     return message
 
 
@@ -234,13 +260,13 @@ async def send_topic_message(
     db: Session = Depends(get_db),
 ) -> MessageRead:
     manager: ConnectionManager = request.app.state.connection_manager
-    message, recipients, event = MessageService(db).send_message(
+    message, deliveries = MessageService(db).send_message(
         conversation_id=chat_id,
         current_user=current_user,
         body=payload.body,
         topic_id=topic_id,
     )
-    await manager.send_event(recipients, event)
+    await _send_deliveries(manager, deliveries)
     return message
 
 
@@ -257,7 +283,7 @@ async def upload_topic_attachment(
     db: Session = Depends(get_db),
 ) -> MessageRead:
     manager: ConnectionManager = request.app.state.connection_manager
-    message, recipients, event = await AttachmentService(db).upload_message_attachment(
+    message, deliveries = await AttachmentService(db).upload_message_attachment(
         conversation_id=chat_id,
         current_user=current_user,
         upload=file,
@@ -265,7 +291,7 @@ async def upload_topic_attachment(
         is_voice_message=is_voice_message,
         topic_id=topic_id,
     )
-    await manager.send_event(recipients, event)
+    await _send_deliveries(manager, deliveries)
     return message
 
 
@@ -279,13 +305,13 @@ async def edit_message(
     db: Session = Depends(get_db),
 ) -> MessageRead:
     manager: ConnectionManager = request.app.state.connection_manager
-    message, recipients, event = MessageService(db).edit_message(
+    message, deliveries = MessageService(db).edit_message(
         conversation_id=chat_id,
         message_id=message_id,
         current_user=current_user,
         body=payload.body,
     )
-    await manager.send_event(recipients, event)
+    await _send_deliveries(manager, deliveries)
     return message
 
 
@@ -298,12 +324,12 @@ async def delete_message(
     db: Session = Depends(get_db),
 ) -> MessageRead:
     manager: ConnectionManager = request.app.state.connection_manager
-    message, recipients, event = MessageService(db).delete_message(
+    message, deliveries = MessageService(db).delete_message(
         conversation_id=chat_id,
         message_id=message_id,
         current_user=current_user,
     )
-    await manager.send_event(recipients, event)
+    await _send_deliveries(manager, deliveries)
     return message
 
 

@@ -3,6 +3,7 @@ import httpx
 from app.tests.helpers import auth_headers
 
 
+
 async def test_register_user_hashes_password_and_returns_profile(
     client: httpx.AsyncClient,
 ) -> None:

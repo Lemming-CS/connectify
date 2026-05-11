@@ -11,6 +11,7 @@ from app.repositories.messages import MessageRepository
 from app.schemas.messaging import AttachmentRead, MessageRead
 from app.services.media_storage import LocalMediaStorage, StoredMedia
 from app.services.messaging_permissions import can_send_messages, can_send_topic_messages, can_view_topic
+from app.services.notifications import NotificationService, RealtimeDelivery
 
 
 class AttachmentService:
@@ -19,6 +20,7 @@ class AttachmentService:
         self.attachments = AttachmentRepository(db)
         self.conversations = ConversationRepository(db)
         self.messages = MessageRepository(db)
+        self.notifications = NotificationService(db)
         self.storage = LocalMediaStorage()
 
     async def upload_message_attachment(
@@ -30,7 +32,7 @@ class AttachmentService:
         body: str | None,
         is_voice_message: bool,
         topic_id: int | None = None,
-    ) -> tuple[MessageRead, list[int], dict[str, object]]:
+    ) -> tuple[MessageRead, list[RealtimeDelivery]]:
         conversation, member, topic = self._resolve_context(
             conversation_id=conversation_id,
             user_id=current_user.id,
@@ -77,6 +79,12 @@ class AttachmentService:
                 duration_seconds=stored.duration_seconds,
             )
             self.conversations.set_last_message(conversation, message)
+            notification_deliveries = self.notifications.create_message_notifications(
+                conversation=conversation,
+                message=message,
+                sender=current_user,
+                body=body,
+            )
             self.db.commit()
         except Exception:
             self.db.rollback()
@@ -89,13 +97,18 @@ class AttachmentService:
             raise RuntimeError("message attachment was created but could not be reloaded")
 
         message_read = self._serialize_message(refreshed)
-        recipients = self.conversations.get_active_member_ids(conversation.id)
-        event = {
-            "type": "message.created",
-            "conversation_id": conversation.id,
-            "payload": message_read.model_dump(mode="json"),
-        }
-        return message_read, recipients, event
+        deliveries = [
+            RealtimeDelivery(
+                recipients=self.conversations.get_active_member_ids(conversation.id),
+                event={
+                    "type": "message.created",
+                    "conversation_id": conversation.id,
+                    "payload": message_read.model_dump(mode="json"),
+                },
+            ),
+            *notification_deliveries,
+        ]
+        return message_read, deliveries
 
     def get_attachment_file(
         self,

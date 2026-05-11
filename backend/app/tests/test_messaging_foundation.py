@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from app.models import Conversation, ConversationMember, ConversationTopic, Message, MessageAttachment, User
+from app.models import Conversation, ConversationMember, ConversationTopic, Message, MessageAttachment, Notification, User
 from app.services.messaging_permissions import (
     can_manage_members,
     can_manage_topics,
@@ -73,9 +73,17 @@ def test_messaging_relationships_support_topics_attachments_and_read_state(db_se
         width=1024,
         height=768,
     )
+    notification = Notification(
+        recipient_id=member.id,
+        actor_id=owner.id,
+        conversation_id=conversation.id,
+        message_id=message.id,
+        kind="message_new",
+        data={"message_preview": "v1 ships today"},
+    )
     member_membership.last_read_message_id = message.id
     member_membership.last_read_at = datetime.now(UTC)
-    db_session.add(attachment)
+    db_session.add_all([attachment, notification])
     db_session.commit()
 
     persisted = db_session.get(Conversation, conversation.id)
@@ -91,6 +99,12 @@ def test_messaging_relationships_support_topics_attachments_and_read_state(db_se
     assert refreshed_member is not None
     assert refreshed_member.last_read_message is not None
     assert refreshed_member.last_read_message.body == "v1 ships today"
+
+    refreshed_notification = db_session.get(Notification, notification.id)
+    assert refreshed_notification is not None
+    assert refreshed_notification.recipient.username == "member"
+    assert refreshed_notification.actor is not None
+    assert refreshed_notification.actor.username == "owner"
 
 
 def test_direct_chat_permissions_are_limited_to_access_and_send(db_session) -> None:

@@ -19,6 +19,7 @@ from app.services.messaging_permissions import (
     can_send_topic_messages,
     can_view_topic,
 )
+from app.services.notifications import NotificationService, RealtimeDelivery
 
 
 class ChatService:
@@ -27,6 +28,7 @@ class ChatService:
         self.conversations = ConversationRepository(db)
         self.users = UserRepository(db)
         self.messages = MessageRepository(db)
+        self.notifications = NotificationService(db)
 
     def create_direct_chat(self, current_user: User, participant_id: int) -> tuple[ChatRead, bool]:
         if participant_id == current_user.id:
@@ -62,7 +64,7 @@ class ChatService:
         current_user: User,
         payload: GroupCreate,
         kind: str,
-    ) -> ChatRead:
+    ) -> tuple[ChatRead, list[RealtimeDelivery]]:
         if kind not in {"group", "supergroup"}:
             raise ValueError("group creation only supports group and supergroup kinds")
 
@@ -84,17 +86,28 @@ class ChatService:
                 is_general=True,
             )
 
+        deliveries = self.notifications.create_group_invite_notifications(
+            conversation=conversation,
+            actor=current_user,
+            recipient_ids=payload.member_ids,
+        )
         self.db.commit()
         refreshed = self.conversations.get_by_id(conversation.id)
         if refreshed is None:
             raise RuntimeError("group was created but could not be reloaded")
-        return self._serialize_chat(refreshed)
+        return self._serialize_chat(refreshed), deliveries
 
     def list_chats(self, current_user: User) -> list[ChatRead]:
         conversations = self.conversations.list_for_user(current_user.id)
         return [self._serialize_chat(conversation) for conversation in conversations]
 
-    def add_member(self, *, conversation_id: int, current_user: User, user_id: int) -> ChatRead:
+    def add_member(
+        self,
+        *,
+        conversation_id: int,
+        current_user: User,
+        user_id: int,
+    ) -> tuple[ChatRead, list[RealtimeDelivery]]:
         conversation, actor = self._get_conversation_and_member(conversation_id, current_user.id)
         if not can_manage_members(conversation, actor):
             raise HTTPException(
@@ -122,13 +135,24 @@ class ChatService:
             )
 
         self.conversations.add_or_restore_member(conversation.id, user_id)
+        deliveries = self.notifications.create_group_invite_notifications(
+            conversation=conversation,
+            actor=current_user,
+            recipient_ids=[user_id],
+        )
         self.db.commit()
         refreshed = self.conversations.get_by_id(conversation.id)
         if refreshed is None:
             raise RuntimeError("chat could not be reloaded after adding member")
-        return self._serialize_chat(refreshed)
+        return self._serialize_chat(refreshed), deliveries
 
-    def remove_member(self, *, conversation_id: int, current_user: User, user_id: int) -> ChatRead:
+    def remove_member(
+        self,
+        *,
+        conversation_id: int,
+        current_user: User,
+        user_id: int,
+    ) -> tuple[ChatRead, list[RealtimeDelivery]]:
         conversation, actor = self._get_conversation_and_member(conversation_id, current_user.id)
         target = self.conversations.get_active_member(conversation.id, user_id)
         if target is None:
@@ -151,11 +175,16 @@ class ChatService:
             )
 
         self.conversations.mark_member_left(target)
+        deliveries = self.notifications.create_group_membership_removed_notification(
+            conversation=conversation,
+            actor=current_user,
+            recipient_id=user_id,
+        )
         self.db.commit()
         refreshed = self.conversations.get_by_id(conversation.id)
         if refreshed is None:
             raise RuntimeError("chat could not be reloaded after removing member")
-        return self._serialize_chat(refreshed)
+        return self._serialize_chat(refreshed), deliveries
 
     def update_member_role(
         self,
@@ -164,7 +193,7 @@ class ChatService:
         current_user: User,
         user_id: int,
         role: str,
-    ) -> ChatRead:
+    ) -> tuple[ChatRead, list[RealtimeDelivery]]:
         conversation, actor = self._get_conversation_and_member(conversation_id, current_user.id)
         if conversation.kind == "direct":
             raise HTTPException(
@@ -195,11 +224,17 @@ class ChatService:
             )
 
         self.conversations.update_member_role(target, role)
+        deliveries = self.notifications.create_group_role_changed_notification(
+            conversation=conversation,
+            actor=current_user,
+            recipient_id=user_id,
+            role=role,
+        )
         self.db.commit()
         refreshed = self.conversations.get_by_id(conversation.id)
         if refreshed is None:
             raise RuntimeError("chat could not be reloaded after role update")
-        return self._serialize_chat(refreshed)
+        return self._serialize_chat(refreshed), deliveries
 
     def mark_read(
         self,
@@ -428,6 +463,7 @@ class MessageService:
         self.db = db
         self.conversations = ConversationRepository(db)
         self.messages = MessageRepository(db)
+        self.notifications = NotificationService(db)
 
     def list_messages(
         self,
@@ -462,7 +498,7 @@ class MessageService:
         current_user: User,
         body: str,
         topic_id: int | None = None,
-    ) -> tuple[MessageRead, list[int], dict[str, object]]:
+    ) -> tuple[MessageRead, list[RealtimeDelivery]]:
         conversation, member, topic = self._resolve_context(
             conversation_id=conversation_id,
             user_id=current_user.id,
@@ -483,6 +519,12 @@ class MessageService:
         message = self.messages.create(conversation.id, current_user.id, body, topic_id=topic.id if topic else None)
         self.db.refresh(message)
         self.conversations.set_last_message(conversation, message)
+        notification_deliveries = self.notifications.create_message_notifications(
+            conversation=conversation,
+            message=message,
+            sender=current_user,
+            body=body,
+        )
         self.db.commit()
 
         refreshed = self.messages.get_by_id(message.id)
@@ -490,13 +532,18 @@ class MessageService:
             raise RuntimeError("message was created but could not be reloaded")
 
         message_read = self._serialize_message(refreshed)
-        recipients = self.conversations.get_active_member_ids(conversation.id)
-        event = {
-            "type": "message.created",
-            "conversation_id": conversation.id,
-            "payload": message_read.model_dump(mode="json"),
-        }
-        return message_read, recipients, event
+        deliveries = [
+            RealtimeDelivery(
+                recipients=self.conversations.get_active_member_ids(conversation.id),
+                event={
+                    "type": "message.created",
+                    "conversation_id": conversation.id,
+                    "payload": message_read.model_dump(mode="json"),
+                },
+            ),
+            *notification_deliveries,
+        ]
+        return message_read, deliveries
 
     def edit_message(
         self,
@@ -505,7 +552,7 @@ class MessageService:
         message_id: int,
         current_user: User,
         body: str,
-    ) -> tuple[MessageRead, list[int], dict[str, object]]:
+    ) -> tuple[MessageRead, list[RealtimeDelivery]]:
         conversation = self.conversations.get_by_id(conversation_id)
         if conversation is None:
             raise HTTPException(
@@ -537,13 +584,17 @@ class MessageService:
         self.db.refresh(message)
 
         message_read = self._serialize_message(message)
-        recipients = self.conversations.get_active_member_ids(conversation_id)
-        event = {
-            "type": "message.updated",
-            "conversation_id": conversation_id,
-            "payload": message_read.model_dump(mode="json"),
-        }
-        return message_read, recipients, event
+        deliveries = [
+            RealtimeDelivery(
+                recipients=self.conversations.get_active_member_ids(conversation_id),
+                event={
+                    "type": "message.updated",
+                    "conversation_id": conversation_id,
+                    "payload": message_read.model_dump(mode="json"),
+                },
+            )
+        ]
+        return message_read, deliveries
 
     def delete_message(
         self,
@@ -551,7 +602,7 @@ class MessageService:
         conversation_id: int,
         message_id: int,
         current_user: User,
-    ) -> tuple[MessageRead, list[int], dict[str, object]]:
+    ) -> tuple[MessageRead, list[RealtimeDelivery]]:
         conversation = self.conversations.get_by_id(conversation_id)
         if conversation is None:
             raise HTTPException(
@@ -578,13 +629,17 @@ class MessageService:
         self.db.refresh(message)
 
         message_read = self._serialize_message(message)
-        recipients = self.conversations.get_active_member_ids(conversation_id)
-        event = {
-            "type": "message.deleted",
-            "conversation_id": conversation_id,
-            "payload": message_read.model_dump(mode="json"),
-        }
-        return message_read, recipients, event
+        deliveries = [
+            RealtimeDelivery(
+                recipients=self.conversations.get_active_member_ids(conversation_id),
+                event={
+                    "type": "message.deleted",
+                    "conversation_id": conversation_id,
+                    "payload": message_read.model_dump(mode="json"),
+                },
+            )
+        ]
+        return message_read, deliveries
 
     def _resolve_context(
         self,
