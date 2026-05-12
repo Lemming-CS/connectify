@@ -4,7 +4,7 @@ import httpx
 from jose import jwt
 
 from app.core.config import Settings, get_settings
-from app.core.security import ALGORITHM, create_access_token, hash_password, verify_password
+from app.core.security import ALGORITHM, create_access_token, hash_password, verify_password, needs_password_rehash
 from app.tests.helpers import auth_headers
 
 
@@ -47,9 +47,8 @@ def test_password_hash_round_trip_and_wrong_password_rejection() -> None:
 
 def test_password_verification_rejects_malformed_hashes() -> None:
     assert not verify_password("password", "not-a-supported-hash")
-    assert not verify_password("password", "pbkdf2_sha256$9999999999$" + "00" * 16 + "$" + "00" * 32)
-    assert not verify_password("password", "pbkdf2_sha256$210000$00$" + "00" * 32)
-
+    assert not verify_password("password", "")
+    assert not verify_password("password", "$argon2id$broken")
 
 async def test_expired_token_is_rejected(
     client: httpx.AsyncClient,
@@ -113,3 +112,35 @@ async def test_token_with_non_string_subject_is_rejected(
 
     assert response.status_code == 401
     assert response.json()["detail"] == "Could not validate credentials"
+
+def test_password_hashing_roundtrip():
+    password = "super-secret-password"
+
+    hashed = hash_password(password)
+
+    assert hashed != password
+    assert verify_password(password, hashed) is True
+    assert verify_password("wrong-password", hashed) is False
+
+
+def test_password_hashes_are_unique_for_same_password() -> None:
+    password = "secure-pass-123"
+
+    first = hash_password(password)
+    second = hash_password(password)
+
+    assert first != second
+
+
+def test_password_hash_uses_argon2() -> None:
+    password_hash = hash_password("secure-pass-123")
+
+    assert password_hash.startswith("$argon2id$")
+
+def test_invalid_hash_returns_false():
+    assert verify_password("password", "invalid-hash") is False
+
+def test_new_hash_does_not_need_rehash() -> None:
+    password_hash = hash_password("secure-pass-123")
+
+    assert needs_password_rehash(password_hash) is False

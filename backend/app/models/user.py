@@ -60,3 +60,18 @@ class User(Base):
         foreign_keys="Notification.actor_id",
         back_populates="actor",
     )
+    calls_started = relationship(
+        "CallSession",
+        foreign_keys="CallSession.caller_id",
+        back_populates="caller",
+    )
+    calls_received = relationship(
+        "CallSession",
+        foreign_keys="CallSession.callee_id",
+        back_populates="callee",
+    )
+    calls_ended = relationship(
+        "CallSession",
+        foreign_keys="CallSession.ended_by_id",
+        back_populates="ended_by",
+    )

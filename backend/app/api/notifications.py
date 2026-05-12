@@ -7,8 +7,8 @@ from app.api.deps import get_current_user
 from app.core.database import get_db
 from app.models.user import User
 from app.schemas.notifications import NotificationClearResult, NotificationRead
-from app.services.notifications import NotificationService, RealtimeDelivery
-from app.services.realtime import ConnectionManager
+from app.services.notifications import NotificationService
+from app.services.realtime import ConnectionManager, RealtimeDelivery
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 

@@ -1,9 +1,16 @@
 from collections import defaultdict
 from collections.abc import Iterable
+from dataclasses import dataclass
 import queue
 import threading
 
 from fastapi import WebSocket
+
+
+@dataclass(frozen=True)
+class RealtimeDelivery:
+    recipients: list[int]
+    event: dict[str, object]
 
 
 class ManagedWebSocket:

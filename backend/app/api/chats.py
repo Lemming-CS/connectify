@@ -22,10 +22,11 @@ from app.schemas.messaging import (
     TopicRead,
     TypingIndicatorUpdate,
 )
+from app.schemas.calls import CallCreate, CallRead
+from app.services.calls import CallService
 from app.services.messaging import ChatService, MessageService, TopicService
-from app.services.notifications import RealtimeDelivery
 from app.services.attachments import AttachmentService
-from app.services.realtime import ConnectionManager
+from app.services.realtime import ConnectionManager, RealtimeDelivery
 
 router = APIRouter(prefix="/chats", tags=["chats"])
 
@@ -144,13 +145,40 @@ async def list_messages(
     db: Session = Depends(get_db),
     before_id: int | None = Query(default=None, gt=0),
     limit: int = Query(default=50, ge=1, le=100),
-) -> MessagePage:
+    ) -> MessagePage:
     return MessageService(db).list_messages(
         conversation_id=chat_id,
         current_user=current_user,
         before_id=before_id,
         limit=limit,
     )
+
+
+@router.get("/{chat_id}/calls", response_model=list[CallRead])
+async def list_calls(
+    chat_id: int,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> list[CallRead]:
+    return CallService(db).list_calls(conversation_id=chat_id, current_user=current_user)
+
+
+@router.post("/{chat_id}/calls", response_model=CallRead, status_code=status.HTTP_201_CREATED)
+async def start_call(
+    chat_id: int,
+    payload: CallCreate,
+    request: Request,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> CallRead:
+    manager: ConnectionManager = request.app.state.connection_manager
+    call, deliveries = CallService(db).start_call(
+        conversation_id=chat_id,
+        current_user=current_user,
+        kind=payload.kind,
+    )
+    await _send_deliveries(manager, deliveries)
+    return call
 
 
 @router.post("/{chat_id}/messages", response_model=MessageRead, status_code=status.HTTP_201_CREATED)

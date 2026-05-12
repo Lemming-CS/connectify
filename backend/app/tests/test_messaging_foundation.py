@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from app.models import Conversation, ConversationMember, ConversationTopic, Message, MessageAttachment, Notification, User
+from app.models import CallSession, Conversation, ConversationMember, ConversationTopic, Message, MessageAttachment, Notification, User
 from app.services.messaging_permissions import (
     can_manage_members,
     can_manage_topics,
@@ -171,3 +171,38 @@ def test_left_members_lose_access_and_management_rights(db_session) -> None:
     assert can_send_messages(conversation, member) is False
     assert can_manage_members(conversation, member) is False
     assert can_manage_topics(conversation, member) is False
+
+
+def test_call_sessions_link_caller_and_callee(db_session) -> None:
+    caller = make_user("caller@example.com", "caller")
+    callee = make_user("callee@example.com", "callee")
+    db_session.add_all([caller, callee])
+    db_session.flush()
+
+    conversation = Conversation(kind="direct", created_by_id=caller.id)
+    db_session.add(conversation)
+    db_session.flush()
+    db_session.add_all(
+        [
+            ConversationMember(conversation_id=conversation.id, user_id=caller.id, role="owner"),
+            ConversationMember(conversation_id=conversation.id, user_id=callee.id, role="member"),
+        ]
+    )
+    db_session.flush()
+
+    call = CallSession(
+        conversation_id=conversation.id,
+        caller_id=caller.id,
+        callee_id=callee.id,
+        kind="video",
+        status="ringing",
+        details={"transport": "webrtc-signaling-only"},
+    )
+    db_session.add(call)
+    db_session.commit()
+
+    persisted = db_session.get(CallSession, call.id)
+    assert persisted is not None
+    assert persisted.caller.username == "caller"
+    assert persisted.callee.username == "callee"
+    assert persisted.conversation.kind == "direct"

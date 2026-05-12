@@ -1,5 +1,4 @@
 import re
-from dataclasses import dataclass
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
@@ -10,14 +9,9 @@ from app.repositories.conversations import ConversationRepository
 from app.repositories.notifications import NotificationRepository
 from app.repositories.users import UserRepository
 from app.schemas.notifications import NotificationRead
+from app.services.realtime import RealtimeDelivery
 
 MENTION_PATTERN = re.compile(r"(?<!\w)@([A-Za-z0-9_]{1,32})\b")
-
-
-@dataclass(frozen=True)
-class RealtimeDelivery:
-    recipients: list[int]
-    event: dict[str, object]
 
 
 class NotificationService:

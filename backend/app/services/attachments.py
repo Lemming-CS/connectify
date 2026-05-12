@@ -11,7 +11,8 @@ from app.repositories.messages import MessageRepository
 from app.schemas.messaging import AttachmentRead, MessageRead
 from app.services.media_storage import LocalMediaStorage, StoredMedia
 from app.services.messaging_permissions import can_send_messages, can_send_topic_messages, can_view_topic
-from app.services.notifications import NotificationService, RealtimeDelivery
+from app.services.notifications import NotificationService
+from app.services.realtime import RealtimeDelivery
 
 
 class AttachmentService:

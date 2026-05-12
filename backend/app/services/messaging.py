@@ -19,7 +19,8 @@ from app.services.messaging_permissions import (
     can_send_topic_messages,
     can_view_topic,
 )
-from app.services.notifications import NotificationService, RealtimeDelivery
+from app.services.notifications import NotificationService
+from app.services.realtime import RealtimeDelivery
 
 
 class ChatService:
