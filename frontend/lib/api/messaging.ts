@@ -175,6 +175,29 @@ export function resolveAttachmentUrl(attachment: Attachment) {
   return `${base}${attachment.media_url}`;
 }
 
+export async function fetchAttachmentBlob(
+  token: string,
+  attachment: Attachment,
+  options?: {
+    download?: boolean;
+  },
+) {
+  const url = new URL(resolveAttachmentUrl(attachment));
+  if (options?.download) {
+    url.searchParams.set("download", "true");
+  }
+  const response = await fetch(url.toString(), {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    throw new Error(response.statusText || "Unable to load attachment.");
+  }
+  return response.blob();
+}
+
 export async function editMessage(token: string, chatId: number, messageId: number, payload: MessageUpdateRequest) {
   return apiRequest<Message>({
     path: `/chats/${chatId}/messages/${messageId}`,

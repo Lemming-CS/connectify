@@ -21,6 +21,8 @@ const manager = {
 
 let realtimeStatus: "idle" | "connecting" | "connected" | "disconnected" = "connected";
 let realtimeListeners = new Set<(event: RealtimeEvent) => void>();
+const originalCreateObjectURL = URL.createObjectURL;
+const originalRevokeObjectURL = URL.revokeObjectURL;
 
 vi.mock("@/components/providers/auth-provider", () => ({
   useAuth: () => ({
@@ -127,6 +129,15 @@ function jsonResponse(body: unknown) {
     ok: true,
     status: 200,
     json: async () => body,
+  });
+}
+
+function blobResponse(body: Blob, ok = true) {
+  return Promise.resolve({
+    ok,
+    status: ok ? 200 : 403,
+    statusText: ok ? "OK" : "Forbidden",
+    blob: async () => body,
   });
 }
 
@@ -255,6 +266,14 @@ describe("MessengerWorkspace", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: originalCreateObjectURL,
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: originalRevokeObjectURL,
+    });
     Object.defineProperty(navigator, "mediaDevices", {
       configurable: true,
       value: undefined,
@@ -393,7 +412,7 @@ describe("MessengerWorkspace", () => {
     expect(screen.getAllByText("Realtime hello")).toHaveLength(1);
   });
 
-  it("uploads an attachment, sends it with the active chat, and renders the preview", async () => {
+  it("uploads an attachment, renders it, and opens an authenticated image preview", async () => {
     const uploadedMessage = message({
       id: 50,
       sender: {
@@ -415,21 +434,23 @@ describe("MessengerWorkspace", () => {
           height: 480,
           duration_seconds: null,
           created_at: "2026-05-18T10:09:00Z",
-          media_url: "/api/v1/media/diagram.png",
+          media_url: "/api/v1/media/attachments/900",
         },
       ],
       created_at: "2026-05-18T10:09:00Z",
     });
     MockXMLHttpRequest.instances = [];
     MockXMLHttpRequest.responseBody = uploadedMessage;
+    const createObjectURL = vi.fn(() => "blob:preview");
+    const revokeObjectURL = vi.fn();
     vi.stubGlobal("XMLHttpRequest", MockXMLHttpRequest as unknown as typeof XMLHttpRequest);
     Object.defineProperty(URL, "createObjectURL", {
       configurable: true,
-      value: vi.fn(() => "blob:preview"),
+      value: createObjectURL,
     });
     Object.defineProperty(URL, "revokeObjectURL", {
       configurable: true,
-      value: vi.fn(),
+      value: revokeObjectURL,
     });
     vi.stubGlobal(
       "fetch",
@@ -445,6 +466,10 @@ describe("MessengerWorkspace", () => {
         if (url.endsWith("/chats/10/typing")) {
           return jsonResponse({ accepted: true });
         }
+        if (url.endsWith("/media/attachments/900")) {
+          expect(init?.headers).toEqual({ Authorization: "Bearer test-token" });
+          return blobResponse(new Blob(["image"], { type: "image/png" }));
+        }
         throw new Error(`Unhandled request: ${method} ${url}`);
       }),
     );
@@ -459,14 +484,172 @@ describe("MessengerWorkspace", () => {
 
     expect(await screen.findByText("Photo notes")).toBeInTheDocument();
     expect(screen.getByText("diagram.png")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Open" })).toHaveAttribute(
-      "href",
-      "http://localhost:8000/api/v1/media/diagram.png",
-    );
+    expect(screen.queryByRole("link", { name: "Open" })).not.toBeInTheDocument();
     expect(MockXMLHttpRequest.instances[0].open).toHaveBeenCalledWith(
       "POST",
       "http://localhost:8000/api/v1/chats/10/attachments",
     );
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+
+    expect(await screen.findByRole("dialog", { name: "Attachment preview: diagram.png" })).toBeInTheDocument();
+    expect(await screen.findByRole("img", { name: "diagram.png" })).toHaveAttribute("src", "blob:preview");
+    expect(fetch).toHaveBeenCalledWith(
+      "http://localhost:8000/api/v1/media/attachments/900",
+      expect.objectContaining({
+        headers: { Authorization: "Bearer test-token" },
+      }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:preview");
+  });
+
+  it("renders authenticated video and audio attachment previews", async () => {
+    const mediaMessage = message({
+      attachments: [
+        {
+          id: 901,
+          kind: "video",
+          is_voice_message: false,
+          original_filename: "clip.mp4",
+          content_type: "video/mp4",
+          size_bytes: 4096,
+          checksum_sha256: null,
+          width: 1280,
+          height: 720,
+          duration_seconds: 8,
+          created_at: "2026-05-18T10:09:00Z",
+          media_url: "/api/v1/media/attachments/901",
+        },
+        {
+          id: 902,
+          kind: "audio",
+          is_voice_message: true,
+          original_filename: "voice.ogg",
+          content_type: "audio/ogg",
+          size_bytes: 1024,
+          checksum_sha256: null,
+          width: null,
+          height: null,
+          duration_seconds: 4,
+          created_at: "2026-05-18T10:09:00Z",
+          media_url: "/api/v1/media/attachments/902",
+        },
+      ],
+    });
+    let blobIndex = 0;
+    const createObjectURL = vi.fn(() => {
+      blobIndex += 1;
+      return `blob:media-${blobIndex}`;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url.endsWith("/chats") && method === "GET") {
+          return jsonResponse([chat()]);
+        }
+        if (url.endsWith("/chats/10/messages?limit=30") && method === "GET") {
+          return jsonResponse({ items: [mediaMessage], next_before_id: null });
+        }
+        if (url.endsWith("/chats/10/read")) {
+          return jsonResponse({
+            user_id: 1,
+            username: "owner",
+            last_read_message_id: 1,
+            last_read_at: "2026-05-18T10:06:00Z",
+          });
+        }
+        if (url.endsWith("/media/attachments/901")) {
+          expect(init?.headers).toEqual({ Authorization: "Bearer test-token" });
+          return blobResponse(new Blob(["video"], { type: "video/mp4" }));
+        }
+        if (url.endsWith("/media/attachments/902")) {
+          expect(init?.headers).toEqual({ Authorization: "Bearer test-token" });
+          return blobResponse(new Blob(["audio"], { type: "audio/ogg" }));
+        }
+        throw new Error(`Unhandled request: ${method} ${url}`);
+      }),
+    );
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: createObjectURL,
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: vi.fn(),
+    });
+
+    render(<MessengerWorkspace />);
+
+    expect(await screen.findByText("clip.mp4")).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: "Preview" })[0]);
+    expect(await screen.findByRole("dialog", { name: "Attachment preview: clip.mp4" })).toBeInTheDocument();
+    expect(document.querySelector("video")).toHaveAttribute("src", "blob:media-1");
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole("button", { name: "Preview" })[1]);
+    expect(await screen.findByRole("dialog", { name: "Attachment preview: voice.ogg" })).toBeInTheDocument();
+    expect(document.querySelector("audio")).toHaveAttribute("src", "blob:media-2");
+  });
+
+  it("shows an authenticated attachment preview failure state", async () => {
+    const failedMessage = message({
+      attachments: [
+        {
+          id: 903,
+          kind: "image",
+          is_voice_message: false,
+          original_filename: "blocked.png",
+          content_type: "image/png",
+          size_bytes: 1024,
+          checksum_sha256: null,
+          width: 400,
+          height: 300,
+          duration_seconds: null,
+          created_at: "2026-05-18T10:09:00Z",
+          media_url: "/api/v1/media/attachments/903",
+        },
+      ],
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url.endsWith("/chats") && method === "GET") {
+          return jsonResponse([chat()]);
+        }
+        if (url.endsWith("/chats/10/messages?limit=30") && method === "GET") {
+          return jsonResponse({ items: [failedMessage], next_before_id: null });
+        }
+        if (url.endsWith("/chats/10/read")) {
+          return jsonResponse({
+            user_id: 1,
+            username: "owner",
+            last_read_message_id: 1,
+            last_read_at: "2026-05-18T10:06:00Z",
+          });
+        }
+        if (url.endsWith("/media/attachments/903")) {
+          return blobResponse(new Blob(), false);
+        }
+        throw new Error(`Unhandled request: ${method} ${url}`);
+      }),
+    );
+
+    render(<MessengerWorkspace />);
+
+    await screen.findByText("blocked.png");
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+
+    expect(await screen.findByText("Unable to load attachment")).toBeInTheDocument();
+    expect(screen.getByText("Forbidden")).toBeInTheDocument();
   });
 
   it("opens a direct chat from the known-user selector", async () => {
@@ -521,6 +704,27 @@ describe("MessengerWorkspace", () => {
       "http://localhost:8000/api/v1/chats/direct",
       expect.objectContaining({ method: "POST" }),
     ));
+  });
+
+  it("does not fake global username search when the backend exposes no user search endpoint", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url.endsWith("/chats") && method === "GET") {
+        return jsonResponse([]);
+      }
+      throw new Error(`Unhandled request: ${method} ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<MessengerWorkspace />);
+
+    expect(await screen.findByText("Global username search unavailable")).toBeInTheDocument();
+    expect(screen.getByText(/no user search\/list endpoint/i)).toBeInTheDocument();
+    fireEvent.change(screen.getAllByLabelText("Search known users")[0], { target: { value: "alex" } });
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining("/users"), expect.anything());
   });
 
   it("creates a supergroup and shows it in the list", async () => {

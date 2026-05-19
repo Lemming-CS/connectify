@@ -24,11 +24,12 @@ import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils/cn";
 import type {
-  Chat,
-  ChatMember,
+  Attachment,
   Call,
   CallKind,
   CallSignalType,
+  Chat,
+  ChatMember,
   ConversationRole,
   GroupCreateRequest,
   Message,
@@ -42,7 +43,7 @@ import {
   sendCallSignal,
   startCall,
 } from "@/lib/api/calls";
-import { resolveAttachmentUrl } from "@/lib/api/messaging";
+import { fetchAttachmentBlob } from "@/lib/api/messaging";
 import { MessengerProvider, useMessenger } from "@/features/messenger/messenger-provider";
 import { UserSelector, type KnownUser } from "@/features/messenger/user-selector";
 
@@ -93,6 +94,7 @@ function MessengerWorkspaceInner() {
   const [searchQuery, setSearchQuery] = useState("");
   const [draft, setDraft] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [previewAttachment, setPreviewAttachment] = useState<Attachment | null>(null);
   const [isVoiceMessage, setIsVoiceMessage] = useState(false);
   const [composerError, setComposerError] = useState<string | null>(null);
   const [directParticipantId, setDirectParticipantId] = useState("");
@@ -672,10 +674,11 @@ function MessengerWorkspaceInner() {
           <SidebarSection title="Start a direct chat" emptyCopy="">
             <UserSelector
               actionLabel="Open"
-              emptyCopy="No known users yet. Open the developer fallback to use a user ID until user search exists."
+              emptyCopy="No known users yet."
               users={knownUsers}
               onSelect={(knownUser) => void handleCreateDirectFromKnownUser(knownUser)}
             />
+            <UnavailableUserSearch />
             <DeveloperFallback summary="Open by user ID">
               <form className="space-y-3" onSubmit={handleCreateDirect}>
                 <Field label="User ID" hint="Temporary backend-only path until a user directory API exists.">
@@ -873,6 +876,7 @@ function MessengerWorkspaceInner() {
                         member={currentMember}
                         chat={activeChat}
                         message={message}
+                        onAttachmentPreview={setPreviewAttachment}
                         onDelete={async () => {
                           setBusyKey(`delete-${message.id}`);
                           try {
@@ -994,11 +998,20 @@ function MessengerWorkspaceInner() {
             <p className="text-xs uppercase tracking-[0.24em] text-[var(--color-muted)]">Messenger</p>
             <h2 className="mt-4 max-w-xl text-4xl font-semibold text-[var(--color-ink)]">Select a conversation or create a new one.</h2>
             <p className="mt-4 max-w-xl text-sm leading-7 text-[var(--color-muted)]">
-              Search loaded chats, pick from known users, or use the developer fallback while backend user discovery is unavailable.
+              Search loaded chats, pick from known users, or use the isolated developer fallback while backend user discovery is unavailable.
             </p>
           </div>
         )}
       </Card>
+
+      {previewAttachment && token ? (
+        <AttachmentPreviewModal
+          key={previewAttachment.id}
+          attachment={previewAttachment}
+          token={token}
+          onClose={() => setPreviewAttachment(null)}
+        />
+      ) : null}
 
       <Card className="hidden min-h-[78vh] flex-col overflow-hidden xl:flex">
         <div className="border-b border-[var(--color-card-border)] px-5 py-5">
@@ -1184,6 +1197,18 @@ function DeveloperFallback({
   );
 }
 
+function UnavailableUserSearch() {
+  return (
+    <div className="rounded-lg border border-[var(--color-card-border)] bg-white/65 px-3 py-3 text-sm">
+      <p className="font-semibold text-[var(--color-ink)]">Global username search unavailable</p>
+      <p className="mt-1 leading-6 text-[var(--color-muted)]">
+        The backend currently exposes profile and chat APIs, but no user search/list endpoint. Known users remain searchable
+        from loaded chats; the numeric ID fallback stays isolated for local development.
+      </p>
+    </div>
+  );
+}
+
 function SidebarChatButton({
   chat,
   isActive,
@@ -1227,6 +1252,7 @@ function MessageBubble({
   onEditSubmit,
   onEditCancel,
   onDelete,
+  onAttachmentPreview,
   busyKey,
 }: {
   chat: Chat;
@@ -1240,6 +1266,7 @@ function MessageBubble({
   onEditSubmit: () => void;
   onEditCancel: () => void;
   onDelete: () => void;
+  onAttachmentPreview: (attachment: Attachment) => void;
   busyKey: string | null;
 }) {
   const isOwnMessage = message.sender.id === currentUserId;
@@ -1308,7 +1335,12 @@ function MessageBubble({
             {message.attachments.length > 0 ? (
               <div className="mt-3 space-y-2">
                 {message.attachments.map((attachment) => (
-                  <AttachmentPreview key={attachment.id} attachment={attachment} isOwnMessage={isOwnMessage} />
+                  <AttachmentPreview
+                    key={attachment.id}
+                    attachment={attachment}
+                    isOwnMessage={isOwnMessage}
+                    onPreview={() => onAttachmentPreview(attachment)}
+                  />
                 ))}
               </div>
             ) : null}
@@ -1384,11 +1416,12 @@ function AttachmentDraft({
 function AttachmentPreview({
   attachment,
   isOwnMessage,
+  onPreview,
 }: {
   attachment: Message["attachments"][number];
   isOwnMessage: boolean;
+  onPreview: () => void;
 }) {
-  const url = resolveAttachmentUrl(attachment);
   const label = attachment.original_filename || `${attachment.kind} attachment`;
   const frameClass = cn(
     "rounded-lg border px-3 py-2 text-sm",
@@ -1400,18 +1433,185 @@ function AttachmentPreview({
   return (
     <div className={frameClass}>
       {attachment.kind === "image" ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img alt={label} className="max-h-72 rounded-lg object-contain" src={url} />
+        <div className="flex min-h-28 items-center justify-center rounded-lg border border-dashed border-current/20 bg-black/5 px-4 py-6 text-center text-xs opacity-75">
+          Authenticated image preview
+        </div>
       ) : null}
-      {attachment.kind === "video" ? <video className="max-h-72 w-full rounded-lg" controls src={url} /> : null}
-      {attachment.kind === "audio" ? <audio className="w-full" controls src={url} /> : null}
+      {attachment.kind === "video" ? (
+        <div className="flex min-h-28 items-center justify-center rounded-lg border border-dashed border-current/20 bg-black/5 px-4 py-6 text-center text-xs opacity-75">
+          Authenticated video preview
+        </div>
+      ) : null}
+      {attachment.kind === "audio" ? (
+        <div className="rounded-lg border border-dashed border-current/20 bg-black/5 px-4 py-3 text-xs opacity-75">
+          {attachment.is_voice_message ? "Voice message" : "Authenticated audio preview"}
+        </div>
+      ) : null}
       <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
         <span className="truncate">{attachment.is_voice_message ? `Voice message · ${label}` : label}</span>
-        <a className="text-xs font-semibold underline" href={url} target="_blank" rel="noreferrer">
-          Open
-        </a>
+        <button className="text-xs font-semibold underline" type="button" onClick={onPreview}>
+          Preview
+        </button>
       </div>
       <p className="mt-1 text-xs opacity-70">{formatBytes(attachment.size_bytes)}</p>
+    </div>
+  );
+}
+
+function AttachmentPreviewModal({
+  attachment,
+  token,
+  onClose,
+}: {
+  attachment: Attachment;
+  token: string;
+  onClose: () => void;
+}) {
+  const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const label = attachment.original_filename || `${attachment.kind} attachment`;
+  const isPreviewable = attachment.kind === "image" || attachment.kind === "video" || attachment.kind === "audio";
+  const isOpenableFile = attachment.content_type === "application/pdf" || attachment.content_type?.startsWith("text/");
+
+  useEffect(() => {
+    let isActive = true;
+    let nextUrl: string | null = null;
+
+    async function loadAttachment() {
+      try {
+        const blob = await fetchAttachmentBlob(token, attachment, { download: !isPreviewable });
+        if (!isActive) {
+          return;
+        }
+        nextUrl = URL.createObjectURL(blob);
+        setObjectUrl(nextUrl);
+      } catch (caughtError) {
+        if (isActive) {
+          setError(caughtError instanceof Error ? caughtError.message : "Unable to load attachment.");
+        }
+      } finally {
+        if (isActive) {
+          setIsLoading(false);
+        }
+      }
+    }
+
+    void loadAttachment();
+    return () => {
+      isActive = false;
+      if (nextUrl) {
+        URL.revokeObjectURL(nextUrl);
+      }
+    };
+  }, [attachment, isPreviewable, token]);
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  function downloadAttachment() {
+    if (!objectUrl) {
+      return;
+    }
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = label;
+    document.body.append(link);
+    link.click();
+    link.remove();
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4 py-6"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Attachment preview: ${label}`}
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) {
+          onClose();
+        }
+      }}
+    >
+      <div className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-[24px] border border-[var(--color-card-border)] bg-[var(--color-card)] shadow-[0_30px_90px_rgba(0,0,0,0.35)]">
+        <div className="flex items-start justify-between gap-4 border-b border-[var(--color-card-border)] px-4 py-4 sm:px-5">
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold text-[var(--color-ink)]">{label}</p>
+            <p className="mt-1 text-xs text-[var(--color-muted)]">
+              {attachment.is_voice_message ? "Voice message" : attachment.content_type || attachment.kind} · {formatBytes(attachment.size_bytes)}
+            </p>
+          </div>
+          <button
+            className="rounded-full border border-[var(--color-card-border)] px-3 py-2 text-xs font-semibold text-[var(--color-muted)]"
+            type="button"
+            autoFocus
+            onClick={onClose}
+          >
+            Close
+          </button>
+        </div>
+
+        <div className="min-h-64 flex-1 overflow-auto p-4 sm:p-5">
+          {isLoading ? (
+            <div className="flex min-h-64 items-center justify-center gap-3 text-sm text-[var(--color-muted)]">
+              <Spinner />
+              Loading attachment
+            </div>
+          ) : null}
+          {error ? (
+            <Banner tone="danger">
+              <div>
+                <p className="font-semibold">Unable to load attachment</p>
+                <p className="mt-1 text-sm">{error}</p>
+              </div>
+            </Banner>
+          ) : null}
+          {!isLoading && !error && objectUrl ? (
+            <div className="space-y-4">
+              {attachment.kind === "image" ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img alt={label} className="mx-auto max-h-[70vh] rounded-lg object-contain" src={objectUrl} />
+              ) : null}
+              {attachment.kind === "video" ? (
+                <video className="max-h-[70vh] w-full rounded-lg bg-black" controls src={objectUrl} />
+              ) : null}
+              {attachment.kind === "audio" ? (
+                <div className="rounded-lg border border-[var(--color-card-border)] bg-white/70 p-4">
+                  <audio className="w-full" controls src={objectUrl} />
+                </div>
+              ) : null}
+              {attachment.kind !== "image" && attachment.kind !== "video" && attachment.kind !== "audio" ? (
+                <EmptyState className="text-center">
+                  <p className="font-semibold text-[var(--color-ink)]">No inline preview for this file type.</p>
+                  <p className="mt-2">Download it after the authenticated fetch completes.</p>
+                </EmptyState>
+              ) : null}
+              <div className="flex flex-wrap justify-end gap-2">
+                {isOpenableFile ? (
+                  <a
+                    className="inline-flex min-h-11 items-center rounded-2xl bg-[var(--color-card-strong)] px-4 py-2 text-sm font-semibold text-[var(--color-ink)]"
+                    href={objectUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Open blob
+                  </a>
+                ) : null}
+                <Button type="button" variant="secondary" onClick={downloadAttachment}>
+                  Download
+                </Button>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </div>
     </div>
   );
 }
