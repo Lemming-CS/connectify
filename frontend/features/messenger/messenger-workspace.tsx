@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { EmptyState, StatusBadge } from "@/components/ui/panel";
 import { Select } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
@@ -29,6 +30,7 @@ import type {
   Topic,
 } from "@/lib/api/contracts";
 import { MessengerProvider, useMessenger } from "@/features/messenger/messenger-provider";
+import { UserSelector, type KnownUser } from "@/features/messenger/user-selector";
 
 const CONNECTION_COPY = {
   idle: "Offline",
@@ -77,6 +79,7 @@ function MessengerWorkspaceInner() {
   const [groupTitle, setGroupTitle] = useState("");
   const [groupDescription, setGroupDescription] = useState("");
   const [groupMembers, setGroupMembers] = useState("");
+  const [selectedGroupMemberIds, setSelectedGroupMemberIds] = useState<number[]>([]);
   const [topicTitle, setTopicTitle] = useState("");
   const [topicDescription, setTopicDescription] = useState("");
   const [memberUserId, setMemberUserId] = useState("");
@@ -110,6 +113,10 @@ function MessengerWorkspaceInner() {
     activeChat && user
       ? (state.typingByChatId[activeChat.id] ?? []).filter((entry) => entry.user_id !== user.id)
       : [];
+  const knownUsers = buildKnownUsers(Object.values(state.chatsById), user?.id ?? 0);
+  const addableKnownUsers = activeChat
+    ? knownUsers.filter((knownUser) => !activeChat.members.some((member) => member.id === knownUser.id))
+    : knownUsers;
 
   useEffect(() => {
     if (!scrollRef.current) {
@@ -166,11 +173,12 @@ function MessengerWorkspaceInner() {
 
   async function handleCreateGroup(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const memberIds = Array.from(new Set([...selectedGroupMemberIds, ...parseNumericList(groupMembers)]));
     const payload: GroupCreateRequest = {
       title: groupTitle.trim(),
       description: groupDescription.trim() || null,
       avatar_url: null,
-      member_ids: parseNumericList(groupMembers),
+      member_ids: memberIds,
     };
     if (!payload.title) {
       return;
@@ -181,6 +189,7 @@ function MessengerWorkspaceInner() {
       setGroupTitle("");
       setGroupDescription("");
       setGroupMembers("");
+      setSelectedGroupMemberIds([]);
     } finally {
       setBusyKey(null);
     }
@@ -218,6 +227,32 @@ function MessengerWorkspaceInner() {
     } finally {
       setBusyKey(null);
     }
+  }
+
+  async function handleCreateDirectFromKnownUser(knownUser: KnownUser) {
+    setBusyKey(`create-direct-${knownUser.id}`);
+    try {
+      await createDirectConversation(knownUser.id);
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function handleAddKnownMember(knownUser: KnownUser) {
+    setBusyKey(`add-member-${knownUser.id}`);
+    try {
+      await addMemberToActiveChat(knownUser.id);
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  function toggleGroupMember(knownUser: KnownUser) {
+    setSelectedGroupMemberIds((current) =>
+      current.includes(knownUser.id)
+        ? current.filter((userId) => userId !== knownUser.id)
+        : [...current, knownUser.id],
+    );
   }
 
   async function handleLoadOlder() {
@@ -304,10 +339,10 @@ function MessengerWorkspaceInner() {
 
           <SidebarSection title="Direct chats" emptyCopy="No direct chats yet.">
             {state.chatListLoading && !state.chatListLoaded ? (
-              <div className="flex items-center gap-3 rounded-2xl border border-dashed border-[var(--color-card-border)] px-4 py-4 text-sm text-[var(--color-muted)]">
+              <EmptyState className="flex items-center gap-3">
                 <Spinner />
                 Loading conversations
-              </div>
+              </EmptyState>
             ) : (
               directChats.map((chat) => (
                 <SidebarChatButton
@@ -364,25 +399,30 @@ function MessengerWorkspaceInner() {
           ) : null}
 
           <SidebarSection title="Start a direct chat" emptyCopy="">
-            <form className="space-y-3" onSubmit={handleCreateDirect}>
-              <Field
-                label="Participant ID"
-                hint="The current backend exposes chat creation by user ID only."
-              >
-                <Input
-                  aria-label="Direct participant ID"
-                  inputMode="numeric"
-                  min={1}
-                  placeholder="42"
-                  type="number"
-                  value={directParticipantId}
-                  onChange={(event) => setDirectParticipantId(event.target.value)}
-                />
-              </Field>
-              <Button busy={busyKey === "create-direct"} className="w-full" type="submit">
-                Open direct chat
-              </Button>
-            </form>
+            <UserSelector
+              actionLabel="Open"
+              emptyCopy="No known users yet. Open the developer fallback to use a user ID until user search exists."
+              users={knownUsers}
+              onSelect={(knownUser) => void handleCreateDirectFromKnownUser(knownUser)}
+            />
+            <DeveloperFallback summary="Open by user ID">
+              <form className="space-y-3" onSubmit={handleCreateDirect}>
+                <Field label="User ID" hint="Temporary backend-only path until a user directory API exists.">
+                  <Input
+                    aria-label="Developer direct user ID"
+                    inputMode="numeric"
+                    min={1}
+                    placeholder="42"
+                    type="number"
+                    value={directParticipantId}
+                    onChange={(event) => setDirectParticipantId(event.target.value)}
+                  />
+                </Field>
+                <Button busy={busyKey === "create-direct"} className="w-full" type="submit">
+                  Open direct chat
+                </Button>
+              </form>
+            </DeveloperFallback>
           </SidebarSection>
 
           <SidebarSection title="Create a group" emptyCopy="">
@@ -408,14 +448,29 @@ function MessengerWorkspaceInner() {
                   onChange={(event) => setGroupDescription(event.target.value)}
                 />
               </Field>
-              <Field label="Member IDs" hint="Comma-separated numeric user IDs.">
-                <Input
-                  aria-label="Group member IDs"
-                  placeholder="7, 11, 19"
-                  value={groupMembers}
-                  onChange={(event) => setGroupMembers(event.target.value)}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm font-semibold text-[var(--color-ink)]">Members</p>
+                  <StatusBadge>{selectedGroupMemberIds.length} selected</StatusBadge>
+                </div>
+                <UserSelector
+                  emptyCopy="No known users available from existing chats yet."
+                  mode="multiple"
+                  selectedIds={selectedGroupMemberIds}
+                  users={knownUsers}
+                  onToggle={toggleGroupMember}
                 />
-              </Field>
+              </div>
+              <DeveloperFallback summary="Add member IDs">
+                <Field label="Member IDs" hint="Comma-separated numeric user IDs for local testing.">
+                  <Input
+                    aria-label="Developer group member IDs"
+                    placeholder="7, 11, 19"
+                    value={groupMembers}
+                    onChange={(event) => setGroupMembers(event.target.value)}
+                  />
+                </Field>
+              </DeveloperFallback>
               <Button busy={busyKey === "create-group"} className="w-full" type="submit">
                 Create {groupKind === "group" ? "group" : "supergroup"}
               </Button>
@@ -577,7 +632,7 @@ function MessengerWorkspaceInner() {
             <p className="text-xs uppercase tracking-[0.24em] text-[var(--color-muted)]">Messenger</p>
             <h2 className="mt-4 max-w-xl text-4xl font-semibold text-[var(--color-ink)]">Select a conversation or create a new one.</h2>
             <p className="mt-4 max-w-xl text-sm leading-7 text-[var(--color-muted)]">
-              Search existing chats on the left, or start a direct chat or group by entering participant IDs that exist in the backend.
+              Search loaded chats, pick from known users, or use the developer fallback while backend user discovery is unavailable.
             </p>
           </div>
         )}
@@ -652,21 +707,29 @@ function MessengerWorkspaceInner() {
 
             {canManageMembers ? (
               <SidebarSection title="Add member" emptyCopy="">
-                <form className="space-y-3" onSubmit={handleAddMember}>
-                  <Field label="User ID">
-                    <Input
-                      aria-label="Member user ID"
-                      inputMode="numeric"
-                      min={1}
-                      type="number"
-                      value={memberUserId}
-                      onChange={(event) => setMemberUserId(event.target.value)}
-                    />
-                  </Field>
-                  <Button busy={busyKey === "add-member"} className="w-full" type="submit">
-                    Add member
-                  </Button>
-                </form>
+                <UserSelector
+                  actionLabel="Add"
+                  emptyCopy="No known users outside this chat yet."
+                  users={addableKnownUsers}
+                  onSelect={(knownUser) => void handleAddKnownMember(knownUser)}
+                />
+                <DeveloperFallback summary="Add by user ID">
+                  <form className="space-y-3" onSubmit={handleAddMember}>
+                    <Field label="User ID" hint="Temporary backend-only path until a user directory API exists.">
+                      <Input
+                        aria-label="Developer member user ID"
+                        inputMode="numeric"
+                        min={1}
+                        type="number"
+                        value={memberUserId}
+                        onChange={(event) => setMemberUserId(event.target.value)}
+                      />
+                    </Field>
+                    <Button busy={busyKey === "add-member"} className="w-full" type="submit">
+                      Add member
+                    </Button>
+                  </form>
+                </DeveloperFallback>
               </SidebarSection>
             ) : null}
 
@@ -736,13 +799,26 @@ function SidebarSection({
         <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-[var(--color-muted)]">{title}</h2>
       </div>
       {emptyCopy && (!items || (Array.isArray(items) && items.length === 0)) ? (
-        <div className="rounded-2xl border border-dashed border-[var(--color-card-border)] px-4 py-4 text-sm text-[var(--color-muted)]">
-          {emptyCopy}
-        </div>
+        <EmptyState>{emptyCopy}</EmptyState>
       ) : (
         children
       )}
     </section>
+  );
+}
+
+function DeveloperFallback({
+  summary,
+  children,
+}: {
+  summary: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <details className="rounded-lg border border-dashed border-[var(--color-card-border)] bg-white/50 px-3 py-3 text-sm text-[var(--color-muted)]">
+      <summary className="cursor-pointer font-semibold text-[var(--color-ink)]">{summary}</summary>
+      <div className="mt-3">{children}</div>
+    </details>
   );
 }
 
@@ -772,9 +848,7 @@ function SidebarChatButton({
         <p className="text-sm font-semibold text-[var(--color-ink)]">{getChatTitle(chat, userId)}</p>
         <p className="mt-1 text-sm text-[var(--color-muted)]">{getChatSubtitle(chat, userId)}</p>
       </div>
-      <span className="rounded-full bg-[rgba(23,50,74,0.08)] px-2 py-1 text-[10px] uppercase tracking-[0.2em] text-[var(--color-muted)]">
-        {chat.kind}
-      </span>
+      <StatusBadge className="shrink-0">{chat.kind}</StatusBadge>
     </button>
   );
 }
@@ -966,6 +1040,26 @@ function matchesTopic(topic: Topic, search: string) {
     return true;
   }
   return `${topic.title} ${topic.description ?? ""}`.toLowerCase().includes(search);
+}
+
+function buildKnownUsers(chats: Chat[], currentUserId: number): KnownUser[] {
+  const usersById = new Map<number, KnownUser>();
+  for (const chat of chats) {
+    const context = getChatTitle(chat, currentUserId);
+    for (const member of chat.members) {
+      if (member.id === currentUserId || usersById.has(member.id)) {
+        continue;
+      }
+      usersById.set(member.id, {
+        id: member.id,
+        username: member.username,
+        avatar_url: member.avatar_url,
+        status: member.status,
+        context,
+      });
+    }
+  }
+  return Array.from(usersById.values()).sort((left, right) => left.username.localeCompare(right.username));
 }
 
 function getChatTitle(chat: Chat, userId: number) {

@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { Panel, PanelHeader, StatusBadge } from "@/components/ui/panel";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -30,7 +31,7 @@ export function ProfileForm() {
 
   if (!user) {
     return (
-      <Card className="p-6">
+      <Card className="p-6 sm:p-8">
         <p className="text-sm text-[var(--color-muted)]">Loading your profile…</p>
       </Card>
     );
@@ -119,23 +120,23 @@ function ProfileFormFields({ user, onSave }: ProfileFormFieldsProps) {
   }
 
   return (
-    <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
-      <Card className="p-6 sm:p-8">
-        <div className="space-y-2">
+    <div className="grid min-w-0 gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
+      <Card className="min-w-0 p-5 sm:p-8">
+        <div className="min-w-0 space-y-2">
           <p className="text-sm uppercase tracking-[0.22em] text-[var(--color-muted)]">Profile settings</p>
-          <h1 className="text-3xl font-semibold tracking-tight text-[var(--color-ink)]">Identity and presence</h1>
-          <p className="text-sm leading-6 text-[var(--color-muted)]">
+          <h1 className="text-2xl font-semibold text-[var(--color-ink)] sm:text-3xl">Identity and presence</h1>
+          <p className="max-w-3xl text-sm leading-6 text-[var(--color-muted)]">
             This screen is wired to the current backend contract. Status, bio, and avatar URL persist today; other
             fields are staged for future backend support.
           </p>
         </div>
 
-        <form className="mt-8 grid gap-5" onSubmit={handleSubmit}>
+        <form className="mt-8 grid min-w-0 gap-5" onSubmit={handleSubmit}>
           {serverError ? <Banner tone="danger">{serverError}</Banner> : null}
           {successMessage ? <Banner tone="success">{successMessage}</Banner> : null}
           {capabilityMessage ? <Banner>{capabilityMessage}</Banner> : null}
 
-          <div className="grid gap-5 md:grid-cols-2">
+          <div className="grid min-w-0 gap-5 md:grid-cols-2">
             <Field
               label="Username"
               htmlFor="profile-username"
@@ -163,7 +164,7 @@ function ProfileFormFields({ user, onSave }: ProfileFormFieldsProps) {
             </Field>
           </div>
 
-          <div className="grid gap-5 md:grid-cols-[minmax(0,1fr)_220px]">
+          <div className="grid min-w-0 gap-5 md:grid-cols-[minmax(0,1fr)_220px]">
             <Field
               label="Avatar URL"
               htmlFor="profile-avatar-url"
@@ -200,7 +201,7 @@ function ProfileFormFields({ user, onSave }: ProfileFormFieldsProps) {
             </Field>
           </div>
 
-          <div className="grid gap-5 md:grid-cols-[minmax(0,1fr)_220px]">
+          <div className="grid min-w-0 gap-5 md:grid-cols-[minmax(0,1fr)_220px]">
             <Field
               label="Bio"
               htmlFor="profile-description"
@@ -232,11 +233,11 @@ function ProfileFormFields({ user, onSave }: ProfileFormFieldsProps) {
             </Field>
           </div>
 
-          <div className="flex flex-wrap gap-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
             <Button busy={isSubmitting} type="submit">
               Save Profile
             </Button>
-          <Button
+            <Button
               type="button"
               variant="ghost"
               onClick={() => {
@@ -254,10 +255,10 @@ function ProfileFormFields({ user, onSave }: ProfileFormFieldsProps) {
         </form>
       </Card>
 
-      <Card className="p-6">
-        <p className="text-sm uppercase tracking-[0.22em] text-[var(--color-muted)]">Preview</p>
-        <div className="mt-5 flex items-center gap-4">
-          <div className="flex size-20 items-center justify-center overflow-hidden rounded-[28px] bg-[var(--color-card-strong)] text-2xl font-semibold text-[var(--color-ink)]">
+      <Card className="min-w-0 p-5 sm:p-6">
+        <PanelHeader eyebrow="Preview" title="Public profile" />
+        <div className="mt-5 flex min-w-0 items-start gap-4">
+          <div className="flex size-16 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[var(--color-card-strong)] text-xl font-semibold text-[var(--color-ink)] sm:size-20 sm:text-2xl">
             {avatarPreview ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img alt="Avatar preview" className="size-full object-cover" src={avatarPreview} />
@@ -265,21 +266,28 @@ function ProfileFormFields({ user, onSave }: ProfileFormFieldsProps) {
               user.username.slice(0, 1).toUpperCase()
             )}
           </div>
-          <div>
-            <p className="text-lg font-semibold text-[var(--color-ink)]">{values.displayName || values.username}</p>
-            <p className="text-sm text-[var(--color-muted)]">@{values.username}</p>
-            <p className="mt-1 text-sm capitalize text-[var(--color-accent)]">{values.status}</p>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-lg font-semibold text-[var(--color-ink)]">{values.displayName || values.username}</p>
+            <p className="truncate text-sm text-[var(--color-muted)]">@{values.username}</p>
+            <StatusBadge className="mt-2 capitalize">{values.status}</StatusBadge>
           </div>
         </div>
 
-        <div className="mt-6 rounded-[24px] border border-[var(--color-card-border)] bg-white/70 p-4">
+        {values.description ? (
+          <Panel className="mt-5 p-4">
+            <p className="text-sm font-semibold text-[var(--color-ink)]">Bio</p>
+            <p className="mt-2 break-words text-sm leading-6 text-[var(--color-muted)]">{values.description}</p>
+          </Panel>
+        ) : null}
+
+        <Panel className="mt-5 p-4">
           <p className="text-sm font-semibold text-[var(--color-ink)]">Backend support today</p>
           <ul className="mt-3 space-y-2 text-sm leading-6 text-[var(--color-muted)]">
             <li>Persisted now: `description`, `status`, `avatar_url`</li>
             <li>UI staged only: `username`, `display name`, avatar file upload</li>
             <li>Current user fetching is restored automatically from the saved session token</li>
           </ul>
-        </div>
+        </Panel>
       </Card>
     </div>
   );

@@ -247,6 +247,60 @@ describe("MessengerWorkspace", () => {
     expect(screen.getAllByText("Realtime hello")).toHaveLength(1);
   });
 
+  it("opens a direct chat from the known-user selector", async () => {
+    const createdDirect = chat({
+      id: 10,
+      kind: "direct",
+      title: null,
+      members: [
+        { id: 1, username: "owner", avatar_url: null, status: "online", role: "owner" },
+        { id: 2, username: "alex", avatar_url: null, status: "away", role: "member" },
+      ],
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url.endsWith("/chats") && method === "GET") {
+          return jsonResponse([
+            chat({
+              id: 30,
+              kind: "group",
+              title: "Team",
+              members: [
+                { id: 1, username: "owner", avatar_url: null, status: "online", role: "owner" },
+                { id: 2, username: "alex", avatar_url: null, status: "away", role: "member" },
+              ],
+            }),
+          ]);
+        }
+        if (url.endsWith("/chats/30/messages?limit=30") && method === "GET") {
+          return jsonResponse({ items: [], next_before_id: null });
+        }
+        if (url.endsWith("/chats/direct") && method === "POST") {
+          expect(JSON.parse(String(init?.body))).toEqual({ participant_id: 2 });
+          return jsonResponse(createdDirect);
+        }
+        if (url.endsWith("/chats/10/messages?limit=30") && method === "GET") {
+          return jsonResponse({ items: [], next_before_id: null });
+        }
+        throw new Error(`Unhandled request: ${method} ${url}`);
+      }),
+    );
+
+    render(<MessengerWorkspace />);
+
+    await waitFor(() => expect(screen.getAllByText("Team").length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole("button", { name: /alexTeamOpen/i }));
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+      "http://localhost:8000/api/v1/chats/direct",
+      expect.objectContaining({ method: "POST" }),
+    ));
+  });
+
   it("creates a supergroup and shows it in the list", async () => {
     vi.stubGlobal(
       "fetch",
@@ -284,7 +338,8 @@ describe("MessengerWorkspace", () => {
 
     fireEvent.change(screen.getByLabelText("Group title"), { target: { value: "Platform" } });
     fireEvent.change(screen.getByLabelText("Group description"), { target: { value: "Roadmap" } });
-    fireEvent.change(screen.getByLabelText("Group member IDs"), { target: { value: "2" } });
+    fireEvent.click(screen.getByText("Add member IDs"));
+    fireEvent.change(screen.getByLabelText("Developer group member IDs"), { target: { value: "2" } });
     fireEvent.change(screen.getByLabelText("Group kind"), { target: { value: "supergroup" } });
     fireEvent.click(screen.getByRole("button", { name: "Create supergroup" }));
 
