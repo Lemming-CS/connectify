@@ -280,14 +280,7 @@ function ProfileFormFields({ user, onSave }: ProfileFormFieldsProps) {
           </Panel>
         ) : null}
 
-        <Panel className="mt-5 p-4">
-          <p className="text-sm font-semibold text-[var(--color-ink)]">Backend support today</p>
-          <ul className="mt-3 space-y-2 text-sm leading-6 text-[var(--color-muted)]">
-            <li>Persisted now: `description`, `status`, `avatar_url`</li>
-            <li>UI staged only: `username`, `display name`, avatar file upload</li>
-            <li>Current user fetching is restored automatically from the saved session token</li>
-          </ul>
-        </Panel>
+
       </Card>
     </div>
   );
