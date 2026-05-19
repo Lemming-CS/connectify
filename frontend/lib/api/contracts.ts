@@ -159,6 +159,62 @@ export type ReadStatusUpdateRequest = {
   message_id?: number | null;
 };
 
+export type NotificationActor = {
+  id: number;
+  username: string;
+  avatar_url: string | null;
+};
+
+export type Notification = {
+  id: number;
+  kind: string;
+  recipient_id: number;
+  conversation_id: number | null;
+  message_id: number | null;
+  actor: NotificationActor | null;
+  data: Record<string, unknown>;
+  is_read: boolean;
+  read_at: string | null;
+  created_at: string;
+};
+
+export type NotificationClearResult = {
+  cleared_count: number;
+};
+
+export type CallUser = {
+  id: number;
+  username: string;
+  avatar_url: string | null;
+};
+
+export type CallStatus = "ringing" | "active" | "rejected" | "canceled" | "ended";
+
+export type Call = {
+  id: number;
+  conversation_id: number;
+  caller: CallUser;
+  callee: CallUser;
+  ended_by_id: number | null;
+  kind: CallKind;
+  status: CallStatus;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  accepted_at: string | null;
+  ended_at: string | null;
+};
+
+export type CallCreateRequest = {
+  kind: CallKind;
+};
+
+export type CallSignalType = "offer" | "answer" | "ice_candidate";
+
+export type CallSignalRequest = {
+  signal_type: CallSignalType;
+  payload: Record<string, unknown>;
+};
+
 export type RealtimeEvent = {
   type: string;
   conversation_id?: number;

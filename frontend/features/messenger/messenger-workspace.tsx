@@ -1,12 +1,15 @@
 "use client";
 
 import {
+  Suspense,
   useDeferredValue,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type FormEvent,
 } from "react";
+import { useSearchParams } from "next/navigation";
 
 import { useAuth } from "@/components/providers/auth-provider";
 import { useRealtime } from "@/components/providers/realtime-provider";
@@ -23,12 +26,23 @@ import { cn } from "@/lib/utils/cn";
 import type {
   Chat,
   ChatMember,
+  Call,
+  CallKind,
+  CallSignalType,
   ConversationRole,
   GroupCreateRequest,
   Message,
   PresenceStatus,
   Topic,
 } from "@/lib/api/contracts";
+import {
+  acceptCall,
+  endCall,
+  rejectCall,
+  sendCallSignal,
+  startCall,
+} from "@/lib/api/calls";
+import { resolveAttachmentUrl } from "@/lib/api/messaging";
 import { MessengerProvider, useMessenger } from "@/features/messenger/messenger-provider";
 import { UserSelector, type KnownUser } from "@/features/messenger/user-selector";
 
@@ -42,14 +56,17 @@ const CONNECTION_COPY = {
 export function MessengerWorkspace() {
   return (
     <MessengerProvider>
-      <MessengerWorkspaceInner />
+      <Suspense fallback={<Card className="flex min-h-[78vh] items-center justify-center p-6"><Spinner /> Loading messenger</Card>}>
+        <MessengerWorkspaceInner />
+      </Suspense>
     </MessengerProvider>
   );
 }
 
 function MessengerWorkspaceInner() {
-  const { user } = useAuth();
-  const { status } = useRealtime();
+  const { token, user } = useAuth();
+  const { manager, status } = useRealtime();
+  const searchParams = useSearchParams();
   const {
     state,
     activeChat,
@@ -61,6 +78,7 @@ function MessengerWorkspaceInner() {
     selectTopic,
     loadOlderMessages,
     sendActiveMessage,
+    uploadActiveAttachment,
     editChatMessage,
     deleteChatMessage,
     publishTypingState,
@@ -74,6 +92,9 @@ function MessengerWorkspaceInner() {
   } = useMessenger();
   const [searchQuery, setSearchQuery] = useState("");
   const [draft, setDraft] = useState("");
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [isVoiceMessage, setIsVoiceMessage] = useState(false);
+  const [composerError, setComposerError] = useState<string | null>(null);
   const [directParticipantId, setDirectParticipantId] = useState("");
   const [groupKind, setGroupKind] = useState<"group" | "supergroup">("group");
   const [groupTitle, setGroupTitle] = useState("");
@@ -91,6 +112,17 @@ function MessengerWorkspaceInner() {
   const olderScrollHeightRef = useRef<number | null>(null);
   const typingActiveRef = useRef(false);
   const typingTimeoutRef = useRef<number | null>(null);
+  const localVideoRef = useRef<HTMLVideoElement | null>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  const peerRef = useRef<RTCPeerConnection | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const pendingSignalsRef = useRef<Array<{ signal_type: CallSignalType; payload: Record<string, unknown> }>>([]);
+  const [activeCall, setActiveCall] = useState<Call | null>(null);
+  const [callError, setCallError] = useState<string | null>(null);
+  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const [audioMuted, setAudioMuted] = useState(false);
+  const [videoMuted, setVideoMuted] = useState(false);
 
   const directChats = state.chatIds
     .map((chatId) => state.chatsById[chatId])
@@ -117,6 +149,23 @@ function MessengerWorkspaceInner() {
   const addableKnownUsers = activeChat
     ? knownUsers.filter((knownUser) => !activeChat.members.some((member) => member.id === knownUser.id))
     : knownUsers;
+  const canUseWebRTC =
+    typeof window !== "undefined" &&
+    "RTCPeerConnection" in window &&
+    Boolean(navigator.mediaDevices?.getUserMedia);
+
+  useEffect(() => {
+    const chatId = Number(searchParams.get("chat"));
+    if (!chatId || !state.chatsById[chatId]) {
+      return;
+    }
+    selectChat(chatId);
+    const topicId = Number(searchParams.get("topic"));
+    if (topicId) {
+      selectTopic(topicId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, state.chatsById]);
 
   useEffect(() => {
     if (!scrollRef.current) {
@@ -137,20 +186,82 @@ function MessengerWorkspaceInner() {
       if (typingTimeoutRef.current) {
         window.clearTimeout(typingTimeoutRef.current);
       }
+      cleanupCallMedia();
     };
   }, []);
+
+  useEffect(() => {
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = localStream;
+    }
+  }, [localStream]);
+
+  useEffect(() => {
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = remoteStream;
+    }
+  }, [remoteStream]);
+
+  useEffect(() => {
+    const unsubscribe = manager.subscribe((event) => {
+      if (event.type === "call.created" && event.payload) {
+        const call = event.payload as unknown as Call;
+        if (call.conversation_id === activeChat?.id && user && [call.caller.id, call.callee.id].includes(user.id)) {
+          setActiveCall(call);
+        }
+      }
+      if (event.type === "call.updated" && event.payload) {
+        const call = event.payload as unknown as Call;
+        if (activeCall?.id === call.id || call.conversation_id === activeChat?.id) {
+          setActiveCall(call);
+          if (isTerminalCall(call)) {
+            cleanupCallMedia();
+          }
+        }
+      }
+      if (event.type === "call.signal" && event.payload) {
+        const callId = Number(event.payload.call_id);
+        if (!activeCall || activeCall.id !== callId) {
+          pendingSignalsRef.current.push({
+            signal_type: event.payload.signal_type as CallSignalType,
+            payload: (event.payload.payload ?? {}) as Record<string, unknown>,
+          });
+          return;
+        }
+        void handleIncomingSignal(
+          event.payload.signal_type as CallSignalType,
+          (event.payload.payload ?? {}) as Record<string, unknown>,
+        );
+      }
+    });
+    return unsubscribe;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeCall, activeChat?.id, manager, user?.id]);
 
   async function handleSendMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const body = draft.trim();
-    if (!body) {
+    if (!body && !selectedFile) {
       return;
     }
     setBusyKey("send-message");
+    setComposerError(null);
     try {
       await sendTyping(false);
-      await sendActiveMessage(body);
+      if (selectedFile) {
+        await uploadActiveAttachment({
+          file: selectedFile,
+          body,
+          isVoiceMessage: isVoiceMessage && selectedFile.type.startsWith("audio/"),
+        });
+        setSelectedFile(null);
+        setIsVoiceMessage(false);
+      } else {
+        await sendActiveMessage(body);
+      }
       setDraft("");
+    } catch (error) {
+      setComposerError(error instanceof Error ? error.message : "Unable to send message.");
     } finally {
       setBusyKey(null);
     }
@@ -295,6 +406,166 @@ function MessengerWorkspaceInner() {
     typingTimeoutRef.current = window.setTimeout(() => {
       void sendTyping(false);
     }, 1500);
+  }
+
+  async function startCallFlow(kind: CallKind) {
+    if (!token || !activeChat || activeChat.kind !== "direct" || !canUseWebRTC) {
+      setCallError("Calls require a direct chat and browser media support.");
+      return;
+    }
+    setBusyKey(`start-${kind}-call`);
+    setCallError(null);
+    try {
+      const call = await startCall(token, activeChat.id, { kind });
+      setActiveCall(call);
+      const peer = await preparePeerConnection(call, kind);
+      const offer = await peer.createOffer();
+      await peer.setLocalDescription(offer);
+      await sendCallSignal(token, call.id, {
+        signal_type: "offer",
+        payload: sessionDescriptionPayload(offer),
+      });
+    } catch (error) {
+      setCallError(error instanceof Error ? error.message : "Unable to start call.");
+      cleanupCallMedia();
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function acceptCallFlow() {
+    if (!token || !activeCall || !canUseWebRTC) {
+      setCallError("This browser cannot access call media.");
+      return;
+    }
+    setBusyKey("accept-call");
+    setCallError(null);
+    try {
+      const call = await acceptCall(token, activeCall.id);
+      setActiveCall(call);
+      await preparePeerConnection(call, call.kind);
+      await flushPendingSignals();
+    } catch (error) {
+      setCallError(error instanceof Error ? error.message : "Unable to accept call.");
+      cleanupCallMedia();
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function rejectCallFlow() {
+    if (!token || !activeCall) {
+      return;
+    }
+    setBusyKey("reject-call");
+    try {
+      const call = await rejectCall(token, activeCall.id);
+      setActiveCall(call);
+      cleanupCallMedia();
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function endCallFlow() {
+    if (!token || !activeCall) {
+      return;
+    }
+    setBusyKey("end-call");
+    try {
+      const call = await endCall(token, activeCall.id);
+      setActiveCall(call);
+      cleanupCallMedia();
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function preparePeerConnection(call: Call, kind: CallKind) {
+    if (!token) {
+      throw new Error("No active session");
+    }
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: true,
+      video: kind === "video",
+    });
+    localStreamRef.current = stream;
+    setLocalStream(stream);
+    const remote = new MediaStream();
+    setRemoteStream(remote);
+    const peer = new RTCPeerConnection();
+    peerRef.current = peer;
+    stream.getTracks().forEach((track) => peer.addTrack(track, stream));
+    peer.addEventListener("track", (event) => {
+      event.streams[0]?.getTracks().forEach((track) => remote.addTrack(track));
+      setRemoteStream(remote);
+    });
+    peer.addEventListener("icecandidate", (event) => {
+      if (event.candidate) {
+        void sendCallSignal(token, call.id, {
+          signal_type: "ice_candidate",
+          payload: event.candidate.toJSON() as Record<string, unknown>,
+        });
+      }
+    });
+    return peer;
+  }
+
+  async function flushPendingSignals() {
+    const signals = [...pendingSignalsRef.current];
+    pendingSignalsRef.current = [];
+    for (const signal of signals) {
+      await handleIncomingSignal(signal.signal_type, signal.payload);
+    }
+  }
+
+  async function handleIncomingSignal(signalType: CallSignalType, payload: Record<string, unknown>) {
+    if (!token || !activeCall) {
+      pendingSignalsRef.current.push({ signal_type: signalType, payload });
+      return;
+    }
+    const peer = peerRef.current ?? (await preparePeerConnection(activeCall, activeCall.kind));
+    if (signalType === "offer") {
+      await peer.setRemoteDescription(new RTCSessionDescription(payload as unknown as RTCSessionDescriptionInit));
+      const answer = await peer.createAnswer();
+      await peer.setLocalDescription(answer);
+      await sendCallSignal(token, activeCall.id, {
+        signal_type: "answer",
+        payload: sessionDescriptionPayload(answer),
+      });
+    }
+    if (signalType === "answer") {
+      await peer.setRemoteDescription(new RTCSessionDescription(payload as unknown as RTCSessionDescriptionInit));
+    }
+    if (signalType === "ice_candidate") {
+      await peer.addIceCandidate(new RTCIceCandidate(payload as RTCIceCandidateInit));
+    }
+  }
+
+  function cleanupCallMedia() {
+    peerRef.current?.close();
+    peerRef.current = null;
+    localStreamRef.current?.getTracks().forEach((track) => track.stop());
+    localStreamRef.current = null;
+    setLocalStream(null);
+    setRemoteStream(null);
+    pendingSignalsRef.current = [];
+    setAudioMuted(false);
+    setVideoMuted(false);
+  }
+
+  function toggleAudio() {
+    localStreamRef.current?.getAudioTracks().forEach((track) => {
+      track.enabled = !track.enabled;
+      setAudioMuted(!track.enabled);
+    });
+  }
+
+  function toggleVideo() {
+    localStreamRef.current?.getVideoTracks().forEach((track) => {
+      track.enabled = !track.enabled;
+      setVideoMuted(!track.enabled);
+    });
   }
 
   return (
@@ -509,8 +780,50 @@ function MessengerWorkspaceInner() {
                   <p>{CONNECTION_COPY[status]}</p>
                 </div>
               </div>
+              {activeChat.kind === "direct" ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button
+                    busy={busyKey === "start-audio-call"}
+                    disabled={!canUseWebRTC || Boolean(activeCall && !isTerminalCall(activeCall))}
+                    type="button"
+                    variant="secondary"
+                    onClick={() => void startCallFlow("audio")}
+                  >
+                    Audio call
+                  </Button>
+                  <Button
+                    busy={busyKey === "start-video-call"}
+                    disabled={!canUseWebRTC || Boolean(activeCall && !isTerminalCall(activeCall))}
+                    type="button"
+                    variant="secondary"
+                    onClick={() => void startCallFlow("video")}
+                  >
+                    Video call
+                  </Button>
+                </div>
+              ) : null}
               {activeChat.kind === "supergroup" && !activeTopic ? (
                 <Banner className="mt-3">Select a topic to load supergroup messages.</Banner>
+              ) : null}
+              {!canUseWebRTC && activeChat.kind === "direct" ? (
+                <Banner className="mt-3">This browser cannot access WebRTC media devices.</Banner>
+              ) : null}
+              {callError ? <Banner className="mt-3" tone="danger">{callError}</Banner> : null}
+              {activeCall && !isTerminalCall(activeCall) ? (
+                <CallPanel
+                  activeCall={activeCall}
+                  audioMuted={audioMuted}
+                  busyKey={busyKey}
+                  currentUserId={user?.id ?? 0}
+                  localVideoRef={localVideoRef}
+                  remoteVideoRef={remoteVideoRef}
+                  videoMuted={videoMuted}
+                  onAccept={() => void acceptCallFlow()}
+                  onEnd={() => void endCallFlow()}
+                  onReject={() => void rejectCallFlow()}
+                  onToggleAudio={toggleAudio}
+                  onToggleVideo={toggleVideo}
+                />
               ) : null}
               {activeTopic?.archived_at ? (
                 <Banner className="mt-3">This topic is archived. Only history remains available.</Banner>
@@ -544,12 +857,12 @@ function MessengerWorkspaceInner() {
                     </div>
                   ) : null}
                   {activeMessages.length === 0 ? (
-                    <div className="rounded-[28px] border border-dashed border-[var(--color-card-border)] bg-white/65 px-6 py-10 text-center">
+                    <EmptyState className="bg-white/65 px-6 py-10 text-center">
                       <p className="text-sm font-semibold text-[var(--color-ink)]">No messages yet</p>
                       <p className="mt-2 text-sm text-[var(--color-muted)]">
                         Send the first message to start this conversation.
                       </p>
-                    </div>
+                    </EmptyState>
                   ) : (
                     activeMessages.map((message) => (
                       <MessageBubble
@@ -605,24 +918,73 @@ function MessengerWorkspaceInner() {
                   {typingUsers.map((entry) => entry.username).join(", ")} {typingUsers.length === 1 ? "is" : "are"} typing
                 </p>
               ) : null}
+              {composerError ? <Banner className="mb-3" tone="danger">{composerError}</Banner> : null}
+              {state.upload ? (
+                <div className="mb-3 rounded-lg border border-[var(--color-card-border)] bg-white/75 px-3 py-3">
+                  <div className="flex items-center justify-between gap-3 text-sm">
+                    <span className="truncate font-semibold text-[var(--color-ink)]">{state.upload.fileName}</span>
+                    <span className="shrink-0 text-[var(--color-muted)]">{state.upload.progress}%</span>
+                  </div>
+                  <div className="mt-2 h-2 overflow-hidden rounded-full bg-[var(--color-card-strong)]">
+                    <div
+                      className="h-full bg-[var(--color-accent)] transition-all"
+                      style={{ width: `${state.upload.progress}%` }}
+                    />
+                  </div>
+                  {state.upload.error ? <p className="mt-2 text-sm text-[var(--color-danger)]">{state.upload.error}</p> : null}
+                </div>
+              ) : null}
+              {selectedFile ? (
+                <AttachmentDraft
+                  file={selectedFile}
+                  isVoiceMessage={isVoiceMessage}
+                  onClear={() => {
+                    setSelectedFile(null);
+                    setIsVoiceMessage(false);
+                  }}
+                  onVoiceChange={setIsVoiceMessage}
+                />
+              ) : null}
               <form className="space-y-3" onSubmit={handleSendMessage}>
                 <Textarea
                   aria-label="Message body"
                   disabled={!canCompose}
-                  placeholder={canCompose ? "Write a message" : "You cannot post in this chat right now"}
+                  placeholder={canCompose ? "Write a message or attach a file" : "You cannot post in this chat right now"}
                   rows={3}
                   value={draft}
                   onChange={(event) => handleDraftChange(event.target.value)}
                 />
-                <div className="flex items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
                   <p className="text-sm text-[var(--color-muted)]">
                     {activeChat.kind === "supergroup"
                       ? "Messages stay isolated inside the selected topic."
                       : "Read state updates automatically when new messages arrive."}
                   </p>
-                  <Button busy={busyKey === "send-message"} disabled={!canCompose || !draft.trim()} type="submit">
-                    Send
-                  </Button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label className="inline-flex min-h-11 cursor-pointer items-center justify-center rounded-2xl bg-[var(--color-card-strong)] px-4 py-2 text-sm font-semibold text-[var(--color-ink)] hover:bg-[var(--color-card-border)]">
+                      Attach
+                      <input
+                        aria-label="Upload attachment"
+                        className="sr-only"
+                        type="file"
+                        accept="image/*,video/*,audio/*,.pdf,.zip,.json,.csv,.txt,application/octet-stream"
+                        onChange={(event) => {
+                          const file = event.target.files?.[0] ?? null;
+                          setSelectedFile(file);
+                          setIsVoiceMessage(false);
+                          setComposerError(null);
+                          event.currentTarget.value = "";
+                        }}
+                      />
+                    </label>
+                    <Button
+                      busy={busyKey === "send-message"}
+                      disabled={!canCompose || (!draft.trim() && !selectedFile)}
+                      type="submit"
+                    >
+                      {selectedFile ? "Upload" : "Send"}
+                    </Button>
+                  </div>
                 </div>
               </form>
             </div>
@@ -946,23 +1308,189 @@ function MessageBubble({
             {message.attachments.length > 0 ? (
               <div className="mt-3 space-y-2">
                 {message.attachments.map((attachment) => (
-                  <div
-                    key={attachment.id}
-                    className={cn(
-                      "rounded-2xl border px-3 py-2 text-sm",
-                      isOwnMessage
-                        ? "border-white/12 bg-white/10 text-white/88"
-                        : "border-[var(--color-card-border)] bg-[var(--color-page)] text-[var(--color-ink)]",
-                    )}
-                  >
-                    {attachment.original_filename || `${attachment.kind} attachment`}
-                  </div>
+                  <AttachmentPreview key={attachment.id} attachment={attachment} isOwnMessage={isOwnMessage} />
                 ))}
               </div>
             ) : null}
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+function AttachmentDraft({
+  file,
+  isVoiceMessage,
+  onClear,
+  onVoiceChange,
+}: {
+  file: File;
+  isVoiceMessage: boolean;
+  onClear: () => void;
+  onVoiceChange: (value: boolean) => void;
+}) {
+  const previewUrl = useMemo(
+    () =>
+      file.type.startsWith("image/") || file.type.startsWith("video/") || file.type.startsWith("audio/")
+        ? URL.createObjectURL(file)
+        : null,
+    [file],
+  );
+
+  useEffect(() => {
+    return () => {
+      if (previewUrl) {
+        URL.revokeObjectURL(previewUrl);
+      }
+    };
+  }, [previewUrl]);
+
+  return (
+    <div className="mb-3 rounded-lg border border-[var(--color-card-border)] bg-white/75 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold text-[var(--color-ink)]">{file.name}</p>
+          <p className="mt-1 text-xs text-[var(--color-muted)]">{formatBytes(file.size)} · {file.type || "file"}</p>
+        </div>
+        <button className="text-xs font-semibold text-[var(--color-muted)]" type="button" onClick={onClear}>
+          Remove
+        </button>
+      </div>
+      {previewUrl && file.type.startsWith("image/") ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img alt="" className="mt-3 max-h-48 rounded-lg object-contain" src={previewUrl} />
+      ) : null}
+      {previewUrl && file.type.startsWith("video/") ? (
+        <video className="mt-3 max-h-48 w-full rounded-lg" controls src={previewUrl} />
+      ) : null}
+      {previewUrl && file.type.startsWith("audio/") ? (
+        <div className="mt-3 space-y-3">
+          <audio className="w-full" controls src={previewUrl} />
+          <label className="flex items-center gap-2 text-sm text-[var(--color-muted)]">
+            <input
+              checked={isVoiceMessage}
+              type="checkbox"
+              onChange={(event) => onVoiceChange(event.target.checked)}
+            />
+            Send as voice message
+          </label>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function AttachmentPreview({
+  attachment,
+  isOwnMessage,
+}: {
+  attachment: Message["attachments"][number];
+  isOwnMessage: boolean;
+}) {
+  const url = resolveAttachmentUrl(attachment);
+  const label = attachment.original_filename || `${attachment.kind} attachment`;
+  const frameClass = cn(
+    "rounded-lg border px-3 py-2 text-sm",
+    isOwnMessage
+      ? "border-white/12 bg-white/10 text-white/88"
+      : "border-[var(--color-card-border)] bg-[var(--color-page)] text-[var(--color-ink)]",
+  );
+
+  return (
+    <div className={frameClass}>
+      {attachment.kind === "image" ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img alt={label} className="max-h-72 rounded-lg object-contain" src={url} />
+      ) : null}
+      {attachment.kind === "video" ? <video className="max-h-72 w-full rounded-lg" controls src={url} /> : null}
+      {attachment.kind === "audio" ? <audio className="w-full" controls src={url} /> : null}
+      <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+        <span className="truncate">{attachment.is_voice_message ? `Voice message · ${label}` : label}</span>
+        <a className="text-xs font-semibold underline" href={url} target="_blank" rel="noreferrer">
+          Open
+        </a>
+      </div>
+      <p className="mt-1 text-xs opacity-70">{formatBytes(attachment.size_bytes)}</p>
+    </div>
+  );
+}
+
+function CallPanel({
+  activeCall,
+  audioMuted,
+  busyKey,
+  currentUserId,
+  localVideoRef,
+  remoteVideoRef,
+  videoMuted,
+  onAccept,
+  onEnd,
+  onReject,
+  onToggleAudio,
+  onToggleVideo,
+}: {
+  activeCall: Call;
+  audioMuted: boolean;
+  busyKey: string | null;
+  currentUserId: number;
+  localVideoRef: React.RefObject<HTMLVideoElement | null>;
+  remoteVideoRef: React.RefObject<HTMLVideoElement | null>;
+  videoMuted: boolean;
+  onAccept: () => void;
+  onEnd: () => void;
+  onReject: () => void;
+  onToggleAudio: () => void;
+  onToggleVideo: () => void;
+}) {
+  const isIncoming = activeCall.status === "ringing" && activeCall.callee.id === currentUserId;
+  const peer = activeCall.caller.id === currentUserId ? activeCall.callee : activeCall.caller;
+
+  return (
+    <div className="mt-3 rounded-lg border border-[var(--color-card-border)] bg-white/75 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold text-[var(--color-ink)]">
+            {activeCall.kind === "video" ? "Video" : "Audio"} call with {peer.username}
+          </p>
+          <p className="mt-1 text-xs capitalize text-[var(--color-muted)]">{activeCall.status}</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {isIncoming ? (
+            <>
+              <Button busy={busyKey === "accept-call"} type="button" onClick={onAccept}>
+                Accept
+              </Button>
+              <Button busy={busyKey === "reject-call"} type="button" variant="danger" onClick={onReject}>
+                Reject
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button type="button" variant="secondary" onClick={onToggleAudio}>
+                {audioMuted ? "Unmute" : "Mute"}
+              </Button>
+              {activeCall.kind === "video" ? (
+                <Button type="button" variant="secondary" onClick={onToggleVideo}>
+                  {videoMuted ? "Camera on" : "Camera off"}
+                </Button>
+              ) : null}
+              <Button busy={busyKey === "end-call"} type="button" variant="danger" onClick={onEnd}>
+                End
+              </Button>
+            </>
+          )}
+        </div>
+      </div>
+      {activeCall.kind === "video" ? (
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+          <video ref={remoteVideoRef} className="aspect-video rounded-lg bg-black object-cover" autoPlay playsInline />
+          <video ref={localVideoRef} className="aspect-video rounded-lg bg-black object-cover" autoPlay muted playsInline />
+        </div>
+      ) : null}
+      <p className="mt-3 text-xs leading-5 text-[var(--color-muted)]">
+        Calls use backend signaling only. Media connectivity depends on browser WebRTC and the network path available to both clients.
+      </p>
     </div>
   );
 }
@@ -1130,6 +1658,27 @@ function canSendMessageInScope(chat: Chat, member: ChatMember, topic: Topic | nu
     return hasModeratorRole(member);
   }
   return true;
+}
+
+function isTerminalCall(call: Call) {
+  return call.status === "rejected" || call.status === "canceled" || call.status === "ended";
+}
+
+function sessionDescriptionPayload(description: RTCSessionDescriptionInit): Record<string, unknown> {
+  return {
+    type: description.type,
+    sdp: description.sdp,
+  };
+}
+
+function formatBytes(value: number) {
+  if (value < 1024) {
+    return `${value} B`;
+  }
+  if (value < 1024 * 1024) {
+    return `${Math.round(value / 1024)} KB`;
+  }
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function formatPresence(status: PresenceStatus) {

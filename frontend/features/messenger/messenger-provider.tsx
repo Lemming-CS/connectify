@@ -27,6 +27,7 @@ import {
   removeChatMember,
   sendMessage,
   updateChatMemberRole,
+  uploadAttachment,
 } from "@/lib/api/messaging";
 import { ApiError } from "@/lib/api/client";
 import type {
@@ -55,6 +56,13 @@ type TypingState = {
   expires_at: number;
 };
 
+type UploadState = {
+  fileName: string;
+  progress: number;
+  error: string | null;
+  isUploading: boolean;
+};
+
 type MessengerState = {
   chatIds: number[];
   chatsById: Record<number, Chat>;
@@ -62,6 +70,7 @@ type MessengerState = {
   messagesById: Record<number, Message>;
   scopesByKey: Record<string, ScopeState>;
   typingByChatId: Record<number, TypingState[]>;
+  upload: UploadState | null;
   selectedChatId: number | null;
   selectedTopicId: number | null;
   chatListLoaded: boolean;
@@ -86,6 +95,7 @@ type MessengerContextValue = {
   deleteChatMessage: (messageId: number) => Promise<void>;
   markActiveRead: (messageId?: number | null) => Promise<void>;
   publishTypingState: (isTyping: boolean) => Promise<void>;
+  uploadActiveAttachment: (payload: { file: File; body?: string | null; isVoiceMessage?: boolean }) => Promise<void>;
   createDirectConversation: (participantId: number) => Promise<void>;
   createGroupConversation: (kind: "group" | "supergroup", payload: GroupCreateRequest) => Promise<void>;
   addMemberToActiveChat: (userId: number) => Promise<void>;
@@ -169,6 +179,7 @@ export function MessengerProvider({ children }: { children: ReactNode }) {
     messagesById: {},
     scopesByKey: {},
     typingByChatId: {},
+    upload: null,
     selectedChatId: null,
     selectedTopicId: null,
     chatListLoaded: false,
@@ -378,6 +389,55 @@ export function MessengerProvider({ children }: { children: ReactNode }) {
     }
     const message = await sendMessage(token, activeChat.id, { body }, activeTopic?.id ?? null);
     setState((current) => applyMessageToState(current, message, current.chatsById[message.conversation_id]));
+  }
+
+  async function uploadActiveAttachment(payload: { file: File; body?: string | null; isVoiceMessage?: boolean }) {
+    if (!token || !activeChat) {
+      return;
+    }
+    setState((current) => ({
+      ...current,
+      upload: {
+        fileName: payload.file.name,
+        progress: 0,
+        error: null,
+        isUploading: true,
+      },
+    }));
+    try {
+      const message = await uploadAttachment(token, activeChat.id, {
+        file: payload.file,
+        body: payload.body,
+        isVoiceMessage: payload.isVoiceMessage,
+        topicId: activeTopic?.id ?? null,
+        onProgress: (progress) => {
+          setState((current) => ({
+            ...current,
+            upload: current.upload
+              ? {
+                  ...current.upload,
+                  progress,
+                }
+              : current.upload,
+          }));
+        },
+      });
+      setState((current) => ({
+        ...applyMessageToState(current, message, current.chatsById[message.conversation_id]),
+        upload: null,
+      }));
+    } catch (error) {
+      setState((current) => ({
+        ...current,
+        upload: {
+          fileName: payload.file.name,
+          progress: current.upload?.progress ?? 0,
+          error: getErrorMessage(error),
+          isUploading: false,
+        },
+      }));
+      throw error;
+    }
   }
 
   async function editChatMessage(messageId: number, body: string) {
@@ -678,6 +738,7 @@ export function MessengerProvider({ children }: { children: ReactNode }) {
         deleteChatMessage,
         markActiveRead,
         publishTypingState,
+        uploadActiveAttachment,
         createDirectConversation,
         createGroupConversation,
         addMemberToActiveChat,

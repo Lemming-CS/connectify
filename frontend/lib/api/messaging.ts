@@ -1,4 +1,5 @@
 import type {
+  Attachment,
   Chat,
   DirectChatCreateRequest,
   GroupCreateRequest,
@@ -15,6 +16,7 @@ import type {
   TypingIndicatorUpdateRequest,
 } from "@/lib/api/contracts";
 import { apiRequest } from "@/lib/api/client";
+import { getPublicEnv } from "@/lib/api/env";
 
 export async function listChats(token: string) {
   return apiRequest<Chat[]>({
@@ -110,6 +112,67 @@ export async function sendMessage(
     token,
     body: payload,
   });
+}
+
+export function uploadAttachment(
+  token: string,
+  chatId: number,
+  payload: {
+    file: File;
+    body?: string | null;
+    isVoiceMessage?: boolean;
+    topicId?: number | null;
+    onProgress?: (progress: number) => void;
+  },
+) {
+  const { apiBaseUrl } = getPublicEnv();
+  const path =
+    payload.topicId != null ? `/chats/${chatId}/topics/${payload.topicId}/attachments` : `/chats/${chatId}/attachments`;
+  const formData = new FormData();
+  formData.set("file", payload.file);
+  if (payload.body?.trim()) {
+    formData.set("body", payload.body.trim());
+  }
+  if (payload.isVoiceMessage) {
+    formData.set("is_voice_message", "true");
+  }
+
+  return new Promise<Message>((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", `${apiBaseUrl}${path}`);
+    request.setRequestHeader("Authorization", `Bearer ${token}`);
+
+    request.upload.addEventListener("progress", (event) => {
+      if (event.lengthComputable) {
+        payload.onProgress?.(Math.round((event.loaded / event.total) * 100));
+      }
+    });
+    request.addEventListener("load", () => {
+      if (request.status >= 200 && request.status < 300) {
+        payload.onProgress?.(100);
+        resolve(JSON.parse(request.responseText) as Message);
+        return;
+      }
+      try {
+        const body = JSON.parse(request.responseText) as { detail?: string };
+        reject(new Error(body.detail || "Upload failed"));
+      } catch {
+        reject(new Error(request.statusText || "Upload failed"));
+      }
+    });
+    request.addEventListener("error", () => reject(new Error("Upload failed")));
+    request.addEventListener("abort", () => reject(new Error("Upload was canceled")));
+    request.send(formData);
+  });
+}
+
+export function resolveAttachmentUrl(attachment: Attachment) {
+  if (/^https?:\/\//.test(attachment.media_url)) {
+    return attachment.media_url;
+  }
+  const { apiBaseUrl } = getPublicEnv();
+  const base = apiBaseUrl.replace(/\/api\/v1$/, "");
+  return `${base}${attachment.media_url}`;
 }
 
 export async function editMessage(token: string, chatId: number, messageId: number, payload: MessageUpdateRequest) {
