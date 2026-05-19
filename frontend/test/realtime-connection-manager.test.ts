@@ -55,4 +55,20 @@ describe("RealtimeConnectionManager", () => {
     manager.disconnect();
     expect(statuses.at(-1)).toBe("idle");
   });
+
+  it("reconnects after an unexpected socket close", () => {
+    vi.useFakeTimers();
+    const manager = new RealtimeConnectionManager("token-abc");
+
+    manager.connect();
+    expect(MockWebSocket.instances).toHaveLength(1);
+
+    MockWebSocket.instances[0].emit("close");
+    expect(manager.getStatus()).toBe("disconnected");
+
+    vi.advanceTimersByTime(1500);
+    expect(MockWebSocket.instances).toHaveLength(2);
+
+    vi.useRealTimers();
+  });
 });

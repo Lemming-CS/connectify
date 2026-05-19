@@ -9,6 +9,7 @@ import { useAuth } from "@/components/providers/auth-provider";
 type RealtimeContextValue = {
   status: RealtimeStatus;
   lastEvent: RealtimeEvent | null;
+  manager: RealtimeConnectionManager;
 };
 
 const RealtimeContext = createContext<RealtimeContextValue | null>(null);
@@ -37,7 +38,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
     manager.updateToken(null);
   }, [isAuthenticated, manager, token]);
 
-  return <RealtimeContext.Provider value={{ status, lastEvent }}>{children}</RealtimeContext.Provider>;
+  return <RealtimeContext.Provider value={{ status, lastEvent, manager }}>{children}</RealtimeContext.Provider>;
 }
 
 export function useRealtime() {

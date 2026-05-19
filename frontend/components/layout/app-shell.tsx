@@ -10,7 +10,7 @@ import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils/cn";
 
 const NAV_ITEMS = [
-  { href: "/chat", label: "Messenger", description: "Conversations and realtime activity" },
+  { href: "/chat", label: "Messenger", description: "Realtime chats, groups, and topics" },
   { href: "/settings", label: "Profile", description: "Identity, status, and preferences" },
 ];
 
@@ -38,7 +38,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <div>
                 <h1 className="text-2xl font-semibold tracking-tight">Messenger Workspace</h1>
                 <p className="mt-2 text-sm leading-6 text-white/70">
-                  Authentication, profile state, and realtime wiring are ready for the messaging surface.
+                  Direct chats, group controls, topic switching, and realtime state now run on the shared app shell.
                 </p>
               </div>
             </div>
